@@ -33,7 +33,7 @@ public sealed class WbsUiFixture : IAsyncLifetime
     public Dictionary<string, string> Emails { get; } = new();
 
     public ApplicationDbContext OpenDb() => new(new DbContextOptionsBuilder<ApplicationDbContext>()
-        .UseSqlite($"Data Source={_dbPath}").Options);
+        .UseSqlite($"Data Source={_dbPath};Pooling=False").Options);
 
     public async Task InitializeAsync()
     {
@@ -57,7 +57,7 @@ public sealed class WbsUiFixture : IAsyncLifetime
             foreach (var arg in new[] { "run", "--project", Path.Combine(Root, "ConstructionProjectManagement.csproj"),
                          "--no-build", "--no-restore", "--no-launch-profile", "--urls", BaseUrl })
                 start.ArgumentList.Add(arg);
-            start.Environment["ConnectionStrings__DefaultConnection"] = $"Data Source={_dbPath}";
+            start.Environment["ConnectionStrings__DefaultConnection"] = $"Data Source={_dbPath};Pooling=False";
             start.Environment["ASPNETCORE_ENVIRONMENT"] = "Development";
             start.Environment["ASPNETCORE_URLS"] = BaseUrl;
             start.Environment["CPMS_SEED_SAMPLE_DATA"] = "false";
@@ -112,9 +112,21 @@ public sealed class WbsUiFixture : IAsyncLifetime
             await _server.WaitForExitAsync();
             _server.Dispose();
         }
-        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
         foreach (var path in new[] { _dbPath, _dbPath + "-wal", _dbPath + "-shm" })
-            if (File.Exists(path)) File.Delete(path);
+        {
+            for (var attempt = 0; ; attempt++)
+            {
+                try
+                {
+                    File.Delete(path);
+                    break;
+                }
+                catch (IOException) when (attempt < 9)
+                {
+                    await Task.Delay(200);
+                }
+            }
+        }
     }
 
     public async Task<IPage> LoginAsync(IBrowserContext context, string account)

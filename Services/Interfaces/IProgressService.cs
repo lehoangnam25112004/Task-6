@@ -9,7 +9,7 @@ public interface IProgressService
 {
     Task<IReadOnlyCollection<TaskEntity>> GetVisibleTasksAsync(
         string userId,
-        bool isAdmin,
+        IReadOnlyCollection<string> roles,
         CancellationToken cancellationToken = default);
 
     Task<(bool Succeeded, string? Error)> UpdateAsync(
@@ -18,12 +18,12 @@ public interface IProgressService
         TaskStatusModel status,
         string? delayReason,
         string userId,
-        bool isAdmin,
+        IReadOnlyCollection<string> roles,
         CancellationToken cancellationToken = default);
 
     Task<IReadOnlyCollection<ProgressChartPoint>> GetChartAsync(
         string userId,
-        bool isAdmin,
+        IReadOnlyCollection<string> roles,
         CancellationToken cancellationToken = default);
 }
 

@@ -1,5 +1,6 @@
 using ConstructionProjectManagement.Data;
 using ConstructionProjectManagement.Models;
+using ConstructionProjectManagement.Services;
 using ConstructionProjectManagement.Services.Interfaces;
 using ConstructionProjectManagement.ViewModels;
 using Microsoft.AspNetCore.Authorization;
@@ -11,7 +12,7 @@ using TaskStatus = ConstructionProjectManagement.Models.TaskStatus;
 
 namespace ConstructionProjectManagement.Controllers;
 
-[Authorize(Roles = "Admin,Project Director,Project Manager,Site Manager,Supervising Engineer")]
+[Authorize]
 public class QualityController(
     ApplicationDbContext dbContext,
     IQualityService qualityService,
@@ -19,24 +20,42 @@ public class QualityController(
 {
     public async Task<IActionResult> Index(CancellationToken cancellationToken)
     {
+        var access = await CurrentAccessAsync(cancellationToken);
+        if (access is null || !access.CanViewQuality) return Forbid();
+        var projectIds = access.ProjectIds;
+        var inspections = await dbContext.InspectionRequests.AsNoTracking()
+            .Include(item => item.Project).Include(item => item.Task)
+            .Include(item => item.InspectedBy)
+            .Where(item => item.ProjectId == item.Task.ProjectId && projectIds.Contains(item.Task.ProjectId))
+            .OrderByDescending(item => item.RequestedAt).ThenByDescending(item => item.Id)
+            .Take(100).ToListAsync(cancellationToken);
+        var taskIds = inspections.Select(item => item.TaskId).Distinct().ToArray();
+        var inspectionOrder = await dbContext.InspectionRequests.AsNoTracking()
+            .Where(item => taskIds.Contains(item.TaskId))
+            .OrderByDescending(item => item.RequestedAt).ThenByDescending(item => item.Id)
+            .Select(item => new { item.TaskId, item.Id }).ToListAsync(cancellationToken);
         return View(new QualityIndexViewModel
         {
-            Incidents = await dbContext.Incidents.AsNoTracking()
+            CanManageQuality = access.CanManageQuality,
+            WritableProjectIds = access.CanManageQuality ? access.WritableProjectIds.ToHashSet() : new HashSet<int>(),
+            Incidents = access.CanManageQuality ? await dbContext.Incidents.AsNoTracking()
                 .Include(item => item.Project).Include(item => item.AssignedTo)
-                .OrderByDescending(item => item.CreatedAt).Take(100).ToListAsync(cancellationToken),
-            Rfis = await dbContext.RfiRequests.AsNoTracking()
+                .Where(item => projectIds.Contains(item.ProjectId))
+                .OrderByDescending(item => item.CreatedAt).Take(100).ToListAsync(cancellationToken) : [],
+            Rfis = access.CanManageQuality ? await dbContext.RfiRequests.AsNoTracking()
                 .Include(item => item.Project).Include(item => item.CreatedBy)
-                .OrderByDescending(item => item.CreatedAt).Take(100).ToListAsync(cancellationToken),
-            Inspections = await dbContext.InspectionRequests.AsNoTracking()
-                .Include(item => item.Project).Include(item => item.Task)
-                .Include(item => item.InspectedBy)
-                .OrderByDescending(item => item.RequestedAt).Take(100).ToListAsync(cancellationToken)
+                .Where(item => projectIds.Contains(item.ProjectId))
+                .OrderByDescending(item => item.CreatedAt).Take(100).ToListAsync(cancellationToken) : [],
+            Inspections = inspections,
+            LatestInspectionIds = inspectionOrder.GroupBy(item => item.TaskId).Select(group => group.First().Id).ToHashSet()
         });
     }
 
     public async Task<IActionResult> CreateIncident(CancellationToken cancellationToken)
     {
-        await LoadOptionsAsync(cancellationToken);
+        var access = await CurrentAccessAsync(cancellationToken);
+        if (access is null || !access.CanManageQuality) return Forbid();
+        await LoadOptionsAsync(access, cancellationToken);
         return View(new IncidentCreateViewModel());
     }
 
@@ -44,20 +63,24 @@ public class QualityController(
     public async Task<IActionResult> CreateIncident(
         IncidentCreateViewModel model, CancellationToken cancellationToken)
     {
+        var access = await CurrentAccessAsync(cancellationToken);
+        if (access is null || !access.CanManageQuality || (model.ProjectId > 0 && !access.CanWriteQuality(model.ProjectId))) return Forbid();
         if (!ModelState.IsValid)
         {
-            await LoadOptionsAsync(cancellationToken);
+            await LoadOptionsAsync(access, cancellationToken);
             return View(model);
         }
         var userId = userManager.GetUserId(User);
         if (userId is null) return Challenge();
-        var result = await qualityService.CreateIncidentAsync(model, userId, cancellationToken);
-        return await HandleResult(result, nameof(CreateIncident), model, cancellationToken);
+        var result = await qualityService.CreateIncidentAsync(model, userId, access.Roles, cancellationToken);
+        return await HandleResult(result, nameof(CreateIncident), model, access, cancellationToken);
     }
 
     public async Task<IActionResult> CreateRfi(CancellationToken cancellationToken)
     {
-        await LoadOptionsAsync(cancellationToken);
+        var access = await CurrentAccessAsync(cancellationToken);
+        if (access is null || !access.CanManageQuality) return Forbid();
+        await LoadOptionsAsync(access, cancellationToken);
         return View(new RfiCreateViewModel());
     }
 
@@ -65,34 +88,47 @@ public class QualityController(
     public async Task<IActionResult> CreateRfi(
         RfiCreateViewModel model, CancellationToken cancellationToken)
     {
+        var access = await CurrentAccessAsync(cancellationToken);
+        if (access is null || !access.CanManageQuality || (model.ProjectId > 0 && !access.CanWriteQuality(model.ProjectId))) return Forbid();
         if (!ModelState.IsValid)
         {
-            await LoadOptionsAsync(cancellationToken);
+            await LoadOptionsAsync(access, cancellationToken);
             return View(model);
         }
         var userId = userManager.GetUserId(User);
         if (userId is null) return Challenge();
-        var result = await qualityService.CreateRfiAsync(model, userId, cancellationToken);
+        var result = await qualityService.CreateRfiAsync(model, userId, access.Roles, cancellationToken);
         if (!result.Succeeded)
         {
             ModelState.AddModelError(string.Empty, result.Error!);
-            await LoadOptionsAsync(cancellationToken);
+            await LoadOptionsAsync(access, cancellationToken);
             return View(model);
         }
         TempData["SuccessMessage"] = "Đã tạo RFI.";
         return RedirectToAction(nameof(Index));
     }
 
-    public IActionResult RespondRfi(int id) => View(new RfiRespondViewModel { });
+    public async Task<IActionResult> RespondRfi(int id, CancellationToken cancellationToken)
+    {
+        var access = await CurrentAccessAsync(cancellationToken);
+        if (access is null || !access.CanManageQuality) return Forbid();
+        var rfi = await dbContext.RfiRequests.AsNoTracking().SingleOrDefaultAsync(item => item.Id == id, cancellationToken);
+        if (rfi is null || !access.CanWriteQuality(rfi.ProjectId)) return NotFound();
+        return View(new RfiRespondViewModel());
+    }
 
     [HttpPost, ValidateAntiForgeryToken]
     public async Task<IActionResult> RespondRfi(
         int id, RfiRespondViewModel model, CancellationToken cancellationToken)
     {
+        var access = await CurrentAccessAsync(cancellationToken);
+        if (access is null || !access.CanManageQuality) return Forbid();
+        var rfi = await dbContext.RfiRequests.AsNoTracking().SingleOrDefaultAsync(item => item.Id == id, cancellationToken);
+        if (rfi is null || !access.CanWriteQuality(rfi.ProjectId)) return NotFound();
         if (!ModelState.IsValid) return View(model);
         var userId = userManager.GetUserId(User);
         if (userId is null) return Challenge();
-        var result = await qualityService.RespondRfiAsync(id, model, userId, cancellationToken);
+        var result = await qualityService.RespondRfiAsync(id, model, userId, access.Roles, cancellationToken);
         TempData[result.Succeeded ? "SuccessMessage" : "ErrorMessage"] =
             result.Succeeded ? "Đã ghi nhận phản hồi RFI." : result.Error!;
         return RedirectToAction(nameof(Index));
@@ -100,11 +136,9 @@ public class QualityController(
 
     public async Task<IActionResult> CreateInspection(CancellationToken cancellationToken)
     {
-        ViewBag.Tasks = await dbContext.Tasks
-            .Include(task => task.Project)
-            .Where(task => task.RequiresInspection && task.Status != TaskStatus.Cancelled)
-            .OrderBy(task => task.Project.ProjectCode).ThenBy(task => task.Title)
-            .ToListAsync(cancellationToken);
+        var access = await CurrentAccessAsync(cancellationToken);
+        if (access is null || !access.CanManageQuality) return Forbid();
+        await LoadInspectionTasksAsync(access, cancellationToken);
         return View(new InspectionCreateViewModel());
     }
 
@@ -112,18 +146,25 @@ public class QualityController(
     public async Task<IActionResult> CreateInspection(
         InspectionCreateViewModel model, CancellationToken cancellationToken)
     {
+        var access = await CurrentAccessAsync(cancellationToken);
+        if (access is null || !access.CanManageQuality) return Forbid();
+        if (model.TaskId > 0)
+        {
+            var task = await dbContext.Tasks.AsNoTracking().SingleOrDefaultAsync(item => item.Id == model.TaskId, cancellationToken);
+            if (task is null || !access.CanWriteQuality(task.ProjectId)) return NotFound();
+        }
         if (!ModelState.IsValid)
         {
-            await LoadInspectionTasksAsync(cancellationToken);
+            await LoadInspectionTasksAsync(access, cancellationToken);
             return View(model);
         }
         var userId = userManager.GetUserId(User);
         if (userId is null) return Challenge();
-        var result = await qualityService.CreateInspectionAsync(model, userId, cancellationToken);
+        var result = await qualityService.CreateInspectionAsync(model, userId, access.Roles, cancellationToken);
         if (!result.Succeeded)
         {
             ModelState.AddModelError(string.Empty, result.Error!);
-            await LoadInspectionTasksAsync(cancellationToken);
+            await LoadInspectionTasksAsync(access, cancellationToken);
             return View(model);
         }
         TempData["SuccessMessage"] = "Đã tạo yêu cầu nghiệm thu.";
@@ -134,9 +175,20 @@ public class QualityController(
     public async Task<IActionResult> RecordInspection(
         int id, InspectionResultViewModel model, CancellationToken cancellationToken)
     {
+        var access = await CurrentAccessAsync(cancellationToken);
+        if (access is null || !access.CanManageQuality) return Forbid();
+        var inspection = await dbContext.InspectionRequests.AsNoTracking().Include(item => item.Task)
+            .SingleOrDefaultAsync(item => item.Id == id, cancellationToken);
+        if (inspection is null || inspection.ProjectId != inspection.Task.ProjectId ||
+            !access.CanWriteQuality(inspection.Task.ProjectId)) return NotFound();
+        if (!ModelState.IsValid)
+        {
+            TempData["ErrorMessage"] = "Dữ liệu nghiệm thu không hợp lệ.";
+            return RedirectToAction(nameof(Index));
+        }
         var userId = userManager.GetUserId(User);
         if (userId is null) return Challenge();
-        var result = await qualityService.RecordInspectionAsync(id, model, userId, cancellationToken);
+        var result = await qualityService.RecordInspectionAsync(id, model, userId, access.Roles, cancellationToken);
         TempData[result.Succeeded ? "SuccessMessage" : "ErrorMessage"] =
             result.Succeeded ? "Đã ghi nhận kết quả nghiệm thu." : result.Error!;
         return RedirectToAction(nameof(Index));
@@ -144,33 +196,44 @@ public class QualityController(
 
     private async Task<IActionResult> HandleResult(
         (bool Succeeded, string? Error) result, string action,
-        IncidentCreateViewModel model, CancellationToken cancellationToken)
+        IncidentCreateViewModel model, TaskAccess access, CancellationToken cancellationToken)
     {
         if (!result.Succeeded)
         {
             ModelState.AddModelError(string.Empty, result.Error!);
-            await LoadOptionsAsync(cancellationToken);
+            await LoadOptionsAsync(access, cancellationToken);
             return View(action, model);
         }
         TempData["SuccessMessage"] = "Đã tạo sự cố.";
         return RedirectToAction(nameof(Index));
     }
 
-    private async Task LoadOptionsAsync(CancellationToken cancellationToken)
+    private async Task LoadOptionsAsync(TaskAccess access, CancellationToken cancellationToken)
     {
-        ViewBag.Projects = await dbContext.Projects.Where(project => !project.IsArchived)
+        var projectIds = access.WritableProjectIds;
+        ViewBag.Projects = await dbContext.Projects.Where(project => projectIds.Contains(project.Id))
             .OrderBy(project => project.ProjectCode).ToListAsync(cancellationToken);
         ViewBag.Tasks = await dbContext.Tasks.Include(task => task.Project)
-            .Where(task => task.Status != TaskStatus.Cancelled)
+            .Where(task => projectIds.Contains(task.ProjectId) && task.Status != TaskStatus.Cancelled)
             .OrderBy(task => task.Title).ToListAsync(cancellationToken);
-        ViewBag.Users = await dbContext.Users.Where(user => user.IsActive)
+        ViewBag.Users = await dbContext.Users.Where(user => user.IsActive &&
+            (dbContext.ProjectMembers.Any(member => projectIds.Contains(member.ProjectId) && member.UserId == user.Id && member.IsActive) ||
+             dbContext.Projects.Any(project => projectIds.Contains(project.Id) && project.ProjectManagerId == user.Id)))
             .OrderBy(user => user.FullName).ToListAsync(cancellationToken);
     }
 
-    private async Task LoadInspectionTasksAsync(CancellationToken cancellationToken)
+    private async Task LoadInspectionTasksAsync(TaskAccess access, CancellationToken cancellationToken)
     {
+        var projectIds = access.WritableProjectIds;
         ViewBag.Tasks = await dbContext.Tasks.Include(task => task.Project)
-            .Where(task => task.RequiresInspection && task.Status != TaskStatus.Cancelled)
+            .Where(task => projectIds.Contains(task.ProjectId) && task.RequiresInspection &&
+                task.Status != TaskStatus.Cancelled && task.Status != TaskStatus.Completed && task.PercentComplete < 100)
             .OrderBy(task => task.Title).ToListAsync(cancellationToken);
+    }
+
+    private async Task<TaskAccess?> CurrentAccessAsync(CancellationToken cancellationToken)
+    {
+        var user = await userManager.GetUserAsync(User);
+        return user is null ? null : await TaskAccess.LoadAsync(dbContext, user.Id, (await userManager.GetRolesAsync(user)).ToArray(), cancellationToken);
     }
 }

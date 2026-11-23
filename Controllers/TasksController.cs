@@ -19,19 +19,40 @@ public class TasksController(
     UserManager<ApplicationUser> userManager,
     ApplicationDbContext dbContext) : Controller
 {
-    public async Task<IActionResult> Index(CancellationToken cancellationToken)
+    public async Task<IActionResult> Index(int? projectId, Models.TaskStatus? status, TaskPriority? priority, string? keyword, CancellationToken cancellationToken)
     {
+        if (!ModelState.IsValid || (status.HasValue && !Enum.IsDefined(status.Value)) ||
+            (priority.HasValue && !Enum.IsDefined(priority.Value)))
+            return BadRequest("Bộ lọc không hợp lệ.");
         var user = await userManager.GetUserAsync(User);
         if (user is null)
         {
             return Challenge();
         }
 
-        var tasks = await taskService.GetVisibleAsync(
-            user.Id,
-            User.IsInRole("Admin") || User.IsInRole("Project Director"),
-            cancellationToken);
-        return View(new TaskListViewModel { Tasks = tasks });
+        var roles = (await userManager.GetRolesAsync(user)).ToArray();
+        var access = await TaskAccess.LoadAsync(dbContext, user.Id, roles, cancellationToken);
+        if (access is null) return Forbid();
+        var tasks = await taskService.GetVisibleAsync(user.Id, roles, cancellationToken);
+        var query = tasks.AsEnumerable();
+        if (projectId.HasValue) query = query.Where(task => task.ProjectId == projectId.Value);
+        if (status.HasValue) query = query.Where(task => task.Status == status.Value);
+        if (priority.HasValue) query = query.Where(task => task.Priority == priority.Value);
+        if (!string.IsNullOrWhiteSpace(keyword))
+        {
+            var search = keyword.Trim();
+            query = query.Where(task => task.Title.Contains(search, StringComparison.OrdinalIgnoreCase) ||
+                (task.Description?.Contains(search, StringComparison.OrdinalIgnoreCase) ?? false));
+        }
+        var projectIds = access.ProjectIds;
+        var projects = await dbContext.Projects.AsNoTracking().Where(project => projectIds.Contains(project.Id))
+            .OrderBy(project => project.Name).ToListAsync(cancellationToken);
+        return View(new TaskListViewModel
+        {
+            Tasks = query.ToList(), Projects = projects, ProjectId = projectId, Status = status,
+            Priority = priority, Keyword = keyword,
+            CanCreate = access.CanManageTasks && access.WritableProjectIds.Length > 0
+        });
     }
 
     public async Task<IActionResult> Details(int id, CancellationToken cancellationToken)
@@ -42,50 +63,49 @@ public class TasksController(
             return Challenge();
         }
 
-        var task = await taskService.GetByIdAsync(
-            id,
-            user.Id,
-            User.IsInRole("Admin") || User.IsInRole("Project Director"),
-            cancellationToken);
-        return task is null ? NotFound() : View(new TaskDetailsViewModel { Task = task });
+        var roles = (await userManager.GetRolesAsync(user)).ToArray();
+        var access = await TaskAccess.LoadAsync(dbContext, user.Id, roles, cancellationToken);
+        if (access is null) return Forbid();
+        var task = await taskService.GetByIdAsync(id, user.Id, roles, cancellationToken);
+        return task is null ? NotFound() : View(new TaskDetailsViewModel { Task = task, CanEdit = access.CanEditTask(task.ProjectId) });
     }
 
-    [Authorize(Roles = "Admin,Project Director,Project Manager")]
     public async Task<IActionResult> Create(int? projectId, CancellationToken cancellationToken)
     {
+        var user = await userManager.GetUserAsync(User);
+        if (user is null) return Challenge();
+        var access = await TaskAccess.LoadAsync(dbContext, user.Id, (await userManager.GetRolesAsync(user)).ToArray(), cancellationToken);
+        if (access is null || !access.CanManageTasks || (projectId.HasValue && !access.CanEditTask(projectId.Value))) return Forbid();
         var model = new TaskEditViewModel { ProjectId = projectId ?? 0 };
-        await LoadOptionsAsync(model, currentTask: null, cancellationToken);
+        await LoadOptionsAsync(model, currentTask: null, access, cancellationToken);
         return View(model);
     }
 
     [HttpPost]
     [ValidateAntiForgeryToken]
-    [Authorize(Roles = "Admin,Project Director,Project Manager")]
     public async Task<IActionResult> Create(TaskEditViewModel model, CancellationToken cancellationToken)
     {
+        var user = await userManager.GetUserAsync(User);
+        if (user is null) return Challenge();
+        var access = await TaskAccess.LoadAsync(dbContext, user.Id, (await userManager.GetRolesAsync(user)).ToArray(), cancellationToken);
+        if (access is null || !access.CanManageTasks || (model.ProjectId > 0 && !access.CanEditTask(model.ProjectId))) return Forbid();
         if (!ModelState.IsValid)
         {
-            await LoadOptionsAsync(model, currentTask: null, cancellationToken);
+            await LoadOptionsAsync(model, currentTask: null, access, cancellationToken);
             return View(model);
-        }
-
-        var user = await userManager.GetUserAsync(User);
-        if (user is null)
-        {
-            return Challenge();
         }
 
         var result = await taskService.CreateAsync(
             ToEntity(model),
             model.AssigneeIds,
             user.Id,
-            User.IsInRole("Admin") || User.IsInRole("Project Director"),
-            CurrentRoles(),
+            access.Roles.Contains(RoleNames.Admin),
+            access.Roles,
             cancellationToken);
         if (!result.Succeeded)
         {
             ModelState.AddModelError(string.Empty, result.Error!);
-            await LoadOptionsAsync(model, currentTask: null, cancellationToken);
+            await LoadOptionsAsync(model, currentTask: null, access, cancellationToken);
             return View(model);
         }
 
@@ -93,37 +113,27 @@ public class TasksController(
         return RedirectToAction(nameof(Details), new { id = result.Task!.Id });
     }
 
-    [Authorize(Roles = "Admin,Project Director,Project Manager")]
-    public async Task<IActionResult> Edit(int id, int? projectId, CancellationToken cancellationToken)
+    public async Task<IActionResult> Edit(int id, CancellationToken cancellationToken)
     {
         var user = await userManager.GetUserAsync(User);
-        var task = await taskService.GetByIdAsync(
-            id,
-            user?.Id ?? string.Empty,
-            User.IsInRole("Admin") || User.IsInRole("Project Director"),
-            cancellationToken);
+        if (user is null) return Challenge();
+        var roles = (await userManager.GetRolesAsync(user)).ToArray();
+        var access = await TaskAccess.LoadAsync(dbContext, user.Id, roles, cancellationToken);
+        if (access is null) return Forbid();
+        var task = await taskService.GetByIdAsync(id, user.Id, roles, cancellationToken);
         if (task is null)
         {
             return NotFound();
         }
+        if (!access.CanEditTask(task.ProjectId)) return Forbid();
 
         var model = ToViewModel(task);
-        if (projectId.HasValue && projectId.Value != task.ProjectId)
-        {
-            model.ProjectId = projectId.Value;
-            model.WorkItemId = null;
-        }
-
-        await LoadOptionsAsync(
-            model,
-            model.ProjectId == task.ProjectId ? task : null,
-            cancellationToken);
+        await LoadOptionsAsync(model, task, access, cancellationToken);
         return View(model);
     }
 
     [HttpPost]
     [ValidateAntiForgeryToken]
-    [Authorize(Roles = "Admin,Project Director,Project Manager")]
     public async Task<IActionResult> Edit(
         int id,
         TaskEditViewModel model,
@@ -134,41 +144,35 @@ public class TasksController(
             return BadRequest();
         }
 
-        if (!ModelState.IsValid)
-        {
-            var currentTask = await taskService.GetByIdAsync(
-                id,
-                (await userManager.GetUserAsync(User))?.Id ?? string.Empty,
-                User.IsInRole("Admin") || User.IsInRole("Project Director"),
-                cancellationToken);
-            await LoadOptionsAsync(
-                model,
-                currentTask?.ProjectId == model.ProjectId ? currentTask : null,
-                cancellationToken);
-            return View(model);
-        }
-
         var user = await userManager.GetUserAsync(User);
         if (user is null)
         {
             return Challenge();
+        }
+        var roles = (await userManager.GetRolesAsync(user)).ToArray();
+        var access = await TaskAccess.LoadAsync(dbContext, user.Id, roles, cancellationToken);
+        if (access is null) return Forbid();
+        var currentTask = await taskService.GetByIdAsync(id, user.Id, roles, cancellationToken);
+        if (currentTask is null) return NotFound();
+        if (!access.CanEditTask(currentTask.ProjectId)) return Forbid();
+        if (model.ProjectId != currentTask.ProjectId) return BadRequest();
+        if (!ModelState.IsValid)
+        {
+            await LoadOptionsAsync(model, currentTask, access, cancellationToken);
+            return View(model);
         }
 
         var result = await taskService.UpdateAsync(
             ToEntity(model, id),
             model.AssigneeIds,
             user.Id,
-            User.IsInRole("Admin") || User.IsInRole("Project Director"),
-            CurrentRoles(),
+            roles.Contains(RoleNames.Admin),
+            roles,
             cancellationToken);
         if (!result.Succeeded)
         {
             ModelState.AddModelError(string.Empty, result.Error!);
-            var currentTask = await taskService.GetByIdAsync(id, user.Id, User.IsInRole("Admin") || User.IsInRole("Project Director"), cancellationToken);
-            await LoadOptionsAsync(
-                model,
-                currentTask?.ProjectId == model.ProjectId ? currentTask : null,
-                cancellationToken);
+            await LoadOptionsAsync(model, currentTask, access, cancellationToken);
             return View(model);
         }
 
@@ -178,22 +182,24 @@ public class TasksController(
     private async Task LoadOptionsAsync(
         TaskEditViewModel model,
         TaskEntity? currentTask,
+        TaskAccess access,
         CancellationToken cancellationToken)
     {
+        var projectIds = access.WritableProjectIds;
         ViewBag.Projects = await dbContext.Projects
             .AsNoTracking()
-            .Where(project => !project.IsArchived)
+            .Where(project => projectIds.Contains(project.Id))
             .OrderBy(project => project.Name)
             .ToListAsync(cancellationToken);
         var user = await userManager.GetUserAsync(User);
-        var roles = CurrentRoles();
+        var roles = access.Roles;
         var canLinkWbs = roles.Contains("Project Manager", StringComparer.Ordinal) ||
                          roles.Contains("Site Manager", StringComparer.Ordinal) ||
                          roles.Contains("Supervising Engineer", StringComparer.Ordinal) ||
                          roles.Contains("Materials Staff", StringComparer.Ordinal);
         IReadOnlyCollection<WorkItem> workItems = [];
         string? wbsMessage = null;
-        if (user is not null && model.ProjectId > 0 && canLinkWbs)
+        if (user is not null && access.CanEditTask(model.ProjectId) && canLinkWbs)
         {
             var result = await wbsService.GetTaskWorkItemsAsync(
                 model.ProjectId,
@@ -226,17 +232,22 @@ public class TasksController(
         ViewBag.WbsMessage = wbsMessage;
         ViewBag.Tasks = await dbContext.Tasks
             .AsNoTracking()
+            .Where(task => task.ProjectId == model.ProjectId && projectIds.Contains(task.ProjectId) && task.Id != model.Id)
             .OrderBy(task => task.Title)
             .ToListAsync(cancellationToken);
-        ViewBag.Users = await dbContext.Users
-            .AsNoTracking()
-            .Where(user => user.IsActive)
-            .OrderBy(user => user.FullName)
-            .ToListAsync(cancellationToken);
+        var project = await dbContext.Projects.AsNoTracking()
+            .Where(item => item.Id == model.ProjectId && projectIds.Contains(item.Id))
+            .Select(item => new { item.Id, item.ProjectManagerId })
+            .SingleOrDefaultAsync(cancellationToken);
+        ViewBag.Users = project is null
+            ? []
+            : await dbContext.Users.AsNoTracking()
+                .Where(user => user.IsActive &&
+                    (user.Id == project.ProjectManagerId || dbContext.ProjectMembers.Any(member =>
+                        member.ProjectId == project.Id && member.UserId == user.Id && member.IsActive)))
+                .OrderBy(user => user.FullName)
+                .ToListAsync(cancellationToken);
     }
-
-    private IReadOnlyCollection<string> CurrentRoles() =>
-        RoleNames.All.Where(User.IsInRole).ToArray();
 
     private static TaskEntity ToEntity(TaskEditViewModel model, int? id = null)
     {

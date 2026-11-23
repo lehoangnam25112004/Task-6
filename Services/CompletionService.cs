@@ -9,6 +9,18 @@ namespace ConstructionProjectManagement.Services;
 
 public sealed class CompletionService(ApplicationDbContext dbContext) : ICompletionService
 {
+    public async Task<IReadOnlyCollection<Models.Task>?> GetOpenTasksAsync(
+        string userId, IReadOnlyCollection<string> roles, CancellationToken cancellationToken = default)
+    {
+        var access = await TaskAccess.LoadAsync(dbContext, userId, roles, cancellationToken);
+        if (access is null) return null;
+        var projectIds = access.ProjectIds;
+        return await dbContext.Tasks.AsNoTracking().Include(task => task.Project)
+            .Where(task => projectIds.Contains(task.ProjectId) &&
+                task.Status != TaskStatus.Completed && task.Status != TaskStatus.Cancelled)
+            .OrderBy(task => task.PlannedEndDate).Take(100).ToListAsync(cancellationToken);
+    }
+
     public async Task<(bool Succeeded, string? Error)> AddExpenseAsync(ExpenseCreateViewModel model, string userId, CancellationToken cancellationToken = default)
     {
         if (!await dbContext.Projects.AnyAsync(p => p.Id == model.ProjectId && !p.IsArchived, cancellationToken))

@@ -36,6 +36,7 @@ public sealed class InspectionResultViewModel
     public InspectionResult Result { get; set; }
     public string? Notes { get; set; }
     public string? CorrectiveAction { get; set; }
+    public decimal? NewPercentComplete { get; set; }
 }
 
 public sealed class QualityIndexViewModel
@@ -43,4 +44,7 @@ public sealed class QualityIndexViewModel
     public required IReadOnlyCollection<Incident> Incidents { get; init; }
     public required IReadOnlyCollection<RfiRequest> Rfis { get; init; }
     public required IReadOnlyCollection<InspectionRequest> Inspections { get; init; }
+    public bool CanManageQuality { get; init; }
+    public required IReadOnlySet<int> WritableProjectIds { get; init; }
+    public required IReadOnlySet<int> LatestInspectionIds { get; init; }
 }

@@ -19,10 +19,12 @@ public sealed class TaskEditViewModel
     public int? ParentTaskId { get; set; }
 
     [Required(ErrorMessage = "Vui lòng nhập tên công việc.")]
+    [MaxLength(200, ErrorMessage = "Tên công việc không được vượt quá 200 ký tự.")]
     [Display(Name = "Tên công việc")]
     public string Title { get; set; } = string.Empty;
 
     [Display(Name = "Mô tả")]
+    [MaxLength(2000, ErrorMessage = "Mô tả không được vượt quá 2000 ký tự.")]
     public string? Description { get; set; }
 
     [Display(Name = "Ưu tiên")]
@@ -61,9 +63,16 @@ public sealed class TaskEditViewModel
 public sealed class TaskListViewModel
 {
     public required IReadOnlyCollection<TaskEntity> Tasks { get; init; }
+    public bool CanCreate { get; init; }
+    public IReadOnlyCollection<Project> Projects { get; init; } = [];
+    public int? ProjectId { get; init; }
+    public TaskStatus? Status { get; init; }
+    public TaskPriority? Priority { get; init; }
+    public string? Keyword { get; init; }
 }
 
 public sealed class TaskDetailsViewModel
 {
     public required TaskEntity Task { get; init; }
+    public bool CanEdit { get; init; }
 }

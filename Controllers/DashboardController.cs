@@ -1,4 +1,6 @@
 using ConstructionProjectManagement.Services;
+using ConstructionProjectManagement.Data;
+using ConstructionProjectManagement.Models;
 using ConstructionProjectManagement.ViewModels;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
@@ -9,7 +11,8 @@ namespace ConstructionProjectManagement.Controllers;
 [Authorize]
 public class DashboardController(
     DashboardService dashboardService,
-    UserManager<ConstructionProjectManagement.Models.ApplicationUser> userManager) : Controller
+    UserManager<ConstructionProjectManagement.Models.ApplicationUser> userManager,
+    ApplicationDbContext dbContext) : Controller
 {
     public async Task<IActionResult> Index(CancellationToken cancellationToken)
     {
@@ -19,9 +22,8 @@ public class DashboardController(
             return Challenge();
         }
 
-        return View(await dashboardService.GetSummaryAsync(
-            user.Id,
-            User.IsInRole("Admin") || User.IsInRole("Project Director"),
-            cancellationToken));
+        var access = await TaskAccess.LoadAsync(dbContext, user.Id, (await userManager.GetRolesAsync(user)).ToArray(), cancellationToken);
+        if (access is null) return Forbid();
+        return View(await dashboardService.GetSummaryAsync(access, cancellationToken));
     }
 }

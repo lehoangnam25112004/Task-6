@@ -65,6 +65,13 @@ public sealed class MaterialService(ApplicationDbContext dbContext) : IMaterialS
             return (false, "Dự án không hợp lệ.");
         }
 
+        if (model.TaskId.HasValue && !await dbContext.Tasks.AnyAsync(
+                task => task.Id == model.TaskId.Value && task.ProjectId == model.ProjectId,
+                cancellationToken))
+        {
+            return (false, "Công việc không thuộc dự án.");
+        }
+
         var lines = model.Items
             .Where(item => item.QuantityRequested > 0)
             .GroupBy(item => item.MaterialId)

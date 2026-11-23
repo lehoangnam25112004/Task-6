@@ -78,6 +78,13 @@ public sealed class EquipmentService(ApplicationDbContext dbContext) : IEquipmen
             return (false, "Dự án hoặc người nhận không hợp lệ.");
         }
 
+        if (model.TaskId.HasValue && !await dbContext.Tasks.AnyAsync(
+                task => task.Id == model.TaskId.Value && task.ProjectId == model.ProjectId,
+                cancellationToken))
+        {
+            return (false, "Công việc không thuộc dự án.");
+        }
+
         equipment.Status = EquipmentStatus.InUse;
         dbContext.EquipmentAssignments.Add(new EquipmentAssignment
         {

@@ -25,7 +25,12 @@
             <div class="row g-3">
                 <div class="col-md-6">
                     <label asp-for="ProjectId" class="form-label"></label>
+                    @if (Model.Id.HasValue)
+                    {
+                        <input asp-for="ProjectId" type="hidden" />
+                    }
                     <select asp-for="ProjectId" class="form-select" id="taskProjectSelect"
+                            disabled="@Model.Id.HasValue"
                             data-reload-url="@(Model.Id is null ? Url.Action("Create") : Url.Action("Edit", new { id = Model.Id }))">
                         <option value="">-- Chọn dự án --</option>
                         @foreach (var project in projects)
@@ -80,6 +85,7 @@
                 <div class="col-12">
                     <label asp-for="Description" class="form-label"></label>
                     <textarea asp-for="Description" class="form-control"></textarea>
+                    <span asp-validation-for="Description" class="text-danger"></span>
                 </div>
                 <div class="col-md-3">
                     <label asp-for="Priority" class="form-label"></label>
@@ -110,11 +116,11 @@
                 </div>
                 <div class="col-md-6">
                     <label asp-for="ActualStartDate" class="form-label"></label>
-                    <input asp-for="ActualStartDate" class="form-control" />
+                    <input asp-for="ActualStartDate" class="form-control" readonly />
                 </div>
                 <div class="col-md-6">
                     <label asp-for="ActualEndDate" class="form-label"></label>
-                    <input asp-for="ActualEndDate" class="form-control" />
+                    <input asp-for="ActualEndDate" class="form-control" readonly />
                 </div>
                 <div class="col-12">
                     <label asp-for="AssigneeIds" class="form-label">Người phụ trách</label>
@@ -133,22 +139,3 @@
         </div>
     </div>
 </form>
-
-@section Scripts {
-    <partial name="_ValidationScriptsPartial" />
-    <script>
-        document.getElementById("taskProjectSelect").addEventListener("change", event => {
-            const projectId = event.target.value;
-            if (!projectId) {
-                return;
-            }
-            if (!window.confirm("Đổi dự án sẽ tải lại biểu mẫu và làm mất nội dung chưa lưu. Bạn có muốn tiếp tục không?")) {
-                event.target.value = "@Model.ProjectId";
-                return;
-            }
-            const url = new URL(event.target.dataset.reloadUrl, window.location.origin);
-            url.searchParams.set("projectId", projectId);
-            window.location.assign(url);
-        });
-    </script>
-}

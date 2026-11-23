@@ -7,17 +7,11 @@ namespace ConstructionProjectManagement.Services;
 public sealed class DashboardService(ApplicationDbContext dbContext)
 {
     public async Task<DashboardViewModel> GetSummaryAsync(
-        string userId,
-        bool isAdmin,
+        TaskAccess access,
         CancellationToken cancellationToken = default)
     {
-        var projects = dbContext.Projects.Where(project => !project.IsArchived);
-        if (!isAdmin)
-        {
-            projects = projects.Where(project =>
-                project.ProjectManagerId == userId ||
-                project.Members.Any(member => member.UserId == userId && member.IsActive));
-        }
+        var accessibleIds = access.ProjectIds;
+        var projects = dbContext.Projects.Where(project => !project.IsArchived && accessibleIds.Contains(project.Id));
 
         var projectIds = await projects.Select(project => project.Id)
             .ToListAsync(cancellationToken);

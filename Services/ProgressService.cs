@@ -12,10 +12,12 @@ public sealed class ProgressService(ApplicationDbContext dbContext) : IProgressS
 {
     public async Task<IReadOnlyCollection<TaskEntity>> GetVisibleTasksAsync(
         string userId,
-        bool isAdmin,
+        IReadOnlyCollection<string> roles,
         CancellationToken cancellationToken = default)
     {
-        var query = VisibleQuery(userId, isAdmin);
+        var access = await TaskAccess.LoadAsync(dbContext, userId, roles, cancellationToken);
+        if (access is null) return [];
+        var query = VisibleQuery(access);
         return await query
             .OrderBy(task => task.PlannedEndDate)
             .ToListAsync(cancellationToken);
@@ -27,25 +29,21 @@ public sealed class ProgressService(ApplicationDbContext dbContext) : IProgressS
         TaskStatusModel status,
         string? delayReason,
         string userId,
-        bool isAdmin,
+        IReadOnlyCollection<string> roles,
         CancellationToken cancellationToken = default)
     {
-        if (percentComplete is < 0 or > 100)
-        {
-            return (false, "Phần trăm hoàn thành phải từ 0 đến 100.");
-        }
-
-        var task = await VisibleQuery(userId, isAdmin)
+        var access = await TaskAccess.LoadAsync(dbContext, userId, roles, cancellationToken);
+        if (access is null) return (false, "Tài khoản không có quyền truy cập.");
+        var task = await VisibleQuery(access)
             .SingleOrDefaultAsync(item => item.Id == taskId, cancellationToken);
-        if (task is null)
+        if (task is null || !access.CanUpdateProgress(task))
         {
-            return (false, "Không tìm thấy công việc hoặc bạn không có quyền truy cập.");
+            return (false, "Không tìm thấy công việc hoặc bạn không có quyền cập nhật.");
         }
 
-        if (task.RequiresInspection && status == TaskStatusModel.Completed)
-        {
-            return (false, "Công việc cần nghiệm thu chưa thể chuyển Completed.");
-        }
+        var lifecycle = new TaskLifecycle(dbContext);
+        var error = await lifecycle.ValidateAsync(task.Id, task.RequiresInspection, status, percentComplete, cancellationToken);
+        if (error is not null) return (false, error);
 
         var isOverdue = task.PlannedEndDate.Date < DateTime.UtcNow.Date &&
                         percentComplete < 100;
@@ -54,41 +52,19 @@ public sealed class ProgressService(ApplicationDbContext dbContext) : IProgressS
             return (false, "Công việc chậm tiến độ phải có nguyên nhân.");
         }
 
-        dbContext.TaskProgressHistories.Add(new TaskProgressHistory
-        {
-            TaskId = task.Id,
-            PreviousPercentComplete = task.PercentComplete,
-            NewPercentComplete = percentComplete,
-            PreviousStatus = task.Status,
-            NewStatus = status,
-            DelayReason = delayReason?.Trim(),
-            UpdatedById = userId,
-            UpdatedAt = DateTime.UtcNow
-        });
-
-        task.PercentComplete = percentComplete;
-        task.Status = status;
-        task.UpdatedAt = DateTime.UtcNow;
-        if (percentComplete > 0 && !task.ActualStartDate.HasValue)
-        {
-            task.ActualStartDate = DateTime.UtcNow;
-        }
-
-        if (percentComplete == 100)
-        {
-            task.ActualEndDate = DateTime.UtcNow;
-        }
-
+        lifecycle.Apply(task, status, percentComplete, userId, delayReason);
         await dbContext.SaveChangesAsync(cancellationToken);
         return (true, null);
     }
 
     public async Task<IReadOnlyCollection<ProgressChartPoint>> GetChartAsync(
         string userId,
-        bool isAdmin,
+        IReadOnlyCollection<string> roles,
         CancellationToken cancellationToken = default)
     {
-        var tasks = await VisibleQuery(userId, isAdmin)
+        var access = await TaskAccess.LoadAsync(dbContext, userId, roles, cancellationToken);
+        if (access is null) return [];
+        var tasks = await VisibleQuery(access)
             .ToListAsync(cancellationToken);
 
         return tasks
@@ -100,21 +76,13 @@ public sealed class ProgressService(ApplicationDbContext dbContext) : IProgressS
             .ToList();
     }
 
-    private IQueryable<TaskEntity> VisibleQuery(string userId, bool isAdmin)
+    private IQueryable<TaskEntity> VisibleQuery(TaskAccess access)
     {
-        var query = dbContext.Tasks
+        var projectIds = access.ProjectIds;
+        return dbContext.Tasks
             .Include(task => task.Project)
-            .Where(task => !task.Project.IsArchived);
-
-        if (!isAdmin)
-        {
-            query = query.Where(task =>
-                task.Project.ProjectManagerId == userId ||
-                task.Project.Members.Any(member => member.UserId == userId && member.IsActive) ||
-                task.Assignments.Any(assignment => assignment.UserId == userId));
-        }
-
-        return query;
+            .Include(task => task.Assignments)
+            .Where(task => projectIds.Contains(task.ProjectId));
     }
 
     private static decimal CalculatePlannedPercent(TaskEntity task, DateTime today)

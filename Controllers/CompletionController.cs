@@ -19,12 +19,17 @@ public class CompletionController(
 {
     public async Task<IActionResult> Index(CancellationToken cancellationToken)
     {
+        var user = await userManager.GetUserAsync(User);
+        if (user is null) return Challenge();
+        var roles = (await userManager.GetRolesAsync(user)).ToArray();
+        var openTasks = await completionService.GetOpenTasksAsync(user.Id, roles, cancellationToken);
+        if (openTasks is null) return Forbid();
         return View(new CompletionIndexViewModel
         {
             Projects = await dbContext.Projects.Where(p => !p.IsArchived).OrderBy(p => p.ProjectCode).ToListAsync(cancellationToken),
             Expenses = await dbContext.ProjectExpenses.AsNoTracking().Include(e => e.Project).OrderByDescending(e => e.ExpenseDate).Take(100).ToListAsync(cancellationToken),
             Handovers = await dbContext.ProjectHandovers.AsNoTracking().Include(h => h.Project).OrderByDescending(h => h.HandoverDate).Take(100).ToListAsync(cancellationToken),
-            OpenTasks = await dbContext.Tasks.AsNoTracking().Include(t => t.Project).Where(t => t.Status != TaskStatus.Completed && t.Status != TaskStatus.Cancelled).OrderBy(t => t.PlannedEndDate).Take(100).ToListAsync(cancellationToken),
+            OpenTasks = openTasks,
             TotalExpense = await dbContext.ProjectExpenses.SumAsync(e => (decimal?)e.Amount, cancellationToken) ?? 0
         });
     }

@@ -5,3 +5,19 @@
 
 <h1 class="h3 mb-3">Tạo công việc</h1>
 <partial name="_TaskForm" model="Model" />
+
+@section Scripts {
+    <partial name="_ValidationScriptsPartial" />
+    <script>
+        document.getElementById("taskProjectSelect").addEventListener("change", event => {
+            const projectId = event.target.value;
+            if (!window.confirm("Đổi dự án sẽ tải lại biểu mẫu và làm mất nội dung chưa lưu. Bạn có muốn tiếp tục không?")) {
+                event.target.value = "@(Model.ProjectId == 0 ? "" : Model.ProjectId.ToString())";
+                return;
+            }
+            const url = new URL(event.target.dataset.reloadUrl, window.location.origin);
+            if (projectId) url.searchParams.set("projectId", projectId);
+            window.location.assign(url);
+        });
+    </script>
+}

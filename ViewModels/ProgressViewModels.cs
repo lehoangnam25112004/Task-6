@@ -8,6 +8,7 @@ namespace ConstructionProjectManagement.ViewModels;
 public sealed class ProgressIndexViewModel
 {
     public required IReadOnlyCollection<TaskEntity> Tasks { get; init; }
+    public required IReadOnlySet<int> UpdatableTaskIds { get; init; }
 }
 
 public sealed class ProgressUpdateViewModel

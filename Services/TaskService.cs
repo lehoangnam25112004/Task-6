@@ -13,21 +13,24 @@ public sealed class TaskService(
 {
     public async System.Threading.Tasks.Task<IReadOnlyCollection<TaskEntity>> GetVisibleAsync(
         string userId,
-        bool isAdmin,
+        IReadOnlyCollection<string> roles,
         CancellationToken cancellationToken = default)
     {
-        return await VisibleQuery(userId, isAdmin)
+        var access = await TaskAccess.LoadAsync(dbContext, userId, roles, cancellationToken);
+        if (access is null) return [];
+        return await VisibleQuery(access)
             .OrderBy(task => task.PlannedEndDate)
             .ToListAsync(cancellationToken);
     }
 
-    public System.Threading.Tasks.Task<TaskEntity?> GetByIdAsync(
+    public async System.Threading.Tasks.Task<TaskEntity?> GetByIdAsync(
         int id,
         string userId,
-        bool isAdmin,
+        IReadOnlyCollection<string> roles,
         CancellationToken cancellationToken = default)
     {
-        return VisibleQuery(userId, isAdmin)
+        var access = await TaskAccess.LoadAsync(dbContext, userId, roles, cancellationToken);
+        return access is null ? null : await VisibleQuery(access)
             .SingleOrDefaultAsync(task => task.Id == id, cancellationToken);
     }
 
@@ -58,6 +61,9 @@ public sealed class TaskService(
         task.CreatedAt = DateTime.UtcNow;
         task.UpdatedAt = DateTime.UtcNow;
         task.Assignments = BuildAssignments(assigneeIds);
+        task.ActualStartDate = null;
+        task.ActualEndDate = null;
+        new TaskLifecycle(dbContext).Apply(task, task.Status, task.PercentComplete, userId);
         dbContext.Tasks.Add(task);
         await dbContext.SaveChangesAsync(cancellationToken);
         return (true, null, task);
@@ -94,7 +100,6 @@ public sealed class TaskService(
             return (false, validationError);
         }
 
-        existing.ProjectId = task.ProjectId;
         existing.WorkItemId = task.WorkItemId;
         existing.ParentTaskId = task.ParentTaskId;
         existing.Title = task.Title.Trim();
@@ -102,38 +107,33 @@ public sealed class TaskService(
         existing.Priority = task.Priority;
         existing.PlannedStartDate = task.PlannedStartDate;
         existing.PlannedEndDate = task.PlannedEndDate;
-        existing.ActualStartDate = task.ActualStartDate;
-        existing.ActualEndDate = task.ActualEndDate;
-        existing.Status = task.Status;
-        existing.PercentComplete = task.PercentComplete;
         existing.RequiresInspection = task.RequiresInspection;
-        existing.UpdatedAt = DateTime.UtcNow;
+        new TaskLifecycle(dbContext).Apply(existing, task.Status, task.PercentComplete, userId);
 
-        dbContext.TaskAssignments.RemoveRange(existing.Assignments);
-        existing.Assignments = BuildAssignments(assigneeIds);
+        var assignees = assigneeIds.Where(id => !string.IsNullOrWhiteSpace(id))
+            .ToHashSet(StringComparer.Ordinal);
+        dbContext.TaskAssignments.RemoveRange(
+            existing.Assignments.Where(assignment => !assignees.Contains(assignment.UserId)));
+        var existingAssignees = existing.Assignments.Select(assignment => assignment.UserId)
+            .ToHashSet(StringComparer.Ordinal);
+        foreach (var assignee in assignees.Where(id => !existingAssignees.Contains(id)))
+        {
+            existing.Assignments.Add(new TaskAssignment { UserId = assignee });
+        }
         await dbContext.SaveChangesAsync(cancellationToken);
         return (true, null);
     }
 
-    private IQueryable<TaskEntity> VisibleQuery(string userId, bool isAdmin)
+    private IQueryable<TaskEntity> VisibleQuery(TaskAccess access)
     {
-        var query = dbContext.Tasks
+        var projectIds = access.ProjectIds;
+        return dbContext.Tasks
             .AsNoTracking()
             .Include(task => task.Project)
             .Include(task => task.WorkItem)
             .Include(task => task.Assignments)
                 .ThenInclude(assignment => assignment.User)
-            .Where(task => !task.Project.IsArchived);
-
-        if (!isAdmin)
-        {
-            query = query.Where(task =>
-                task.Project.ProjectManagerId == userId ||
-                task.Project.Members.Any(member => member.UserId == userId && member.IsActive) ||
-                task.Assignments.Any(assignment => assignment.UserId == userId));
-        }
-
-        return query;
+            .Where(task => projectIds.Contains(task.ProjectId));
     }
 
     private async Task<string?> ValidateAsync(
@@ -147,34 +147,39 @@ public sealed class TaskService(
         int? existingWorkItemId,
         CancellationToken cancellationToken)
     {
+        if (existingProjectId.HasValue && task.ProjectId != existingProjectId.Value)
+        {
+            return "Không được thay đổi dự án của công việc.";
+        }
+
+        var access = await TaskAccess.LoadAsync(dbContext, userId, roles, cancellationToken);
+        if (access is null || !access.CanEditTask(task.ProjectId))
+            return "Bạn không có quyền ghi trên dự án này.";
+
         if (task.PlannedEndDate < task.PlannedStartDate)
         {
             return "Ngày kết thúc không được trước ngày bắt đầu.";
         }
 
-        if (task.PercentComplete is < 0 or > 100)
-        {
-            return "Phần trăm hoàn thành phải từ 0 đến 100.";
-        }
-
-        if (task.RequiresInspection && task.Status == TaskStatusModel.Completed)
-        {
-            return "Công việc cần nghiệm thu phải chuyển sang PendingInspection trước khi hoàn thành.";
-        }
+        var lifecycleError = await new TaskLifecycle(dbContext).ValidateAsync(
+            existingTaskId, task.RequiresInspection, task.Status, task.PercentComplete, cancellationToken);
+        if (lifecycleError is not null) return lifecycleError;
 
         var project = await dbContext.Projects
             .Include(item => item.Members)
-            .SingleOrDefaultAsync(item => item.Id == task.ProjectId && !item.IsArchived, cancellationToken);
+            .SingleOrDefaultAsync(item => item.Id == task.ProjectId, cancellationToken);
         if (project is null)
         {
             return "Dự án không hợp lệ.";
         }
 
-        if (!isAdmin &&
-            project.ProjectManagerId != userId &&
-            !project.Members.Any(member => member.UserId == userId && member.IsActive))
+        if (existingTaskId.HasValue && !task.RequiresInspection &&
+            await dbContext.Tasks.AnyAsync(
+                item => item.Id == existingTaskId.Value && item.RequiresInspection, cancellationToken) &&
+            await dbContext.InspectionRequests.AnyAsync(
+                item => item.TaskId == existingTaskId.Value, cancellationToken))
         {
-            return "Bạn không có quyền trên dự án này.";
+            return "Không thể bỏ yêu cầu nghiệm thu sau khi đã tạo yêu cầu nghiệm thu.";
         }
 
         if (task.WorkItemId.HasValue)
@@ -218,11 +223,25 @@ public sealed class TaskService(
 
         if (task.ParentTaskId.HasValue)
         {
-            var parent = await dbContext.Tasks
-                .SingleOrDefaultAsync(item => item.Id == task.ParentTaskId, cancellationToken);
-            if (parent is null || parent.ProjectId != task.ProjectId)
+            var nextParentId = task.ParentTaskId;
+            var visited = new HashSet<int>();
+            while (nextParentId.HasValue)
             {
-                return "Công việc cha phải thuộc cùng dự án.";
+                if (nextParentId == existingTaskId || !visited.Add(nextParentId.Value))
+                {
+                    return "Công việc cha không được tạo vòng lặp.";
+                }
+
+                var parent = await dbContext.Tasks.AsNoTracking()
+                    .Where(item => item.Id == nextParentId.Value)
+                    .Select(item => new { item.ProjectId, item.ParentTaskId })
+                    .SingleOrDefaultAsync(cancellationToken);
+                if (parent is null || parent.ProjectId != task.ProjectId)
+                {
+                    return "Công việc cha phải thuộc cùng dự án.";
+                }
+
+                nextParentId = parent.ParentTaskId;
             }
         }
 

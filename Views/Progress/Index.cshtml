@@ -54,8 +54,10 @@
                     <td>@task.Project.ProjectCode</td>
                     <td>@task.PlannedEndDate.ToString("dd/MM/yyyy")</td>
                     <td>@task.PercentComplete.ToString("0.##")%</td>
-                    <td>@task.Status</td>
+                    <td>@task.Status.DisplayName()</td>
                     <td>
+                        @if (Model.UpdatableTaskIds.Contains(task.Id))
+                        {
                         <form asp-action="Update" method="post" class="row g-1">
                             <input type="hidden" name="TaskId" value="@task.Id" />
                             <div class="col-4">
@@ -66,7 +68,7 @@
                                 <select name="Status" class="form-select form-select-sm">
                                     @foreach (var status in Enum.GetValues<TaskStatusModel>())
                                     {
-                                        <option value="@status" selected="@(task.Status == status)">@status</option>
+                                        <option value="@status" selected="@(task.Status == status)">@status.DisplayName()</option>
                                     }
                                 </select>
                             </div>
@@ -78,6 +80,7 @@
                                 <button type="submit" class="btn btn-sm btn-primary">Lưu tiến độ</button>
                             </div>
                         </form>
+                        }
                     </td>
                 </tr>
             }
