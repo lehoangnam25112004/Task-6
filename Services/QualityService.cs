@@ -62,7 +62,8 @@ public sealed class QualityService(ApplicationDbContext dbContext) : IQualitySer
     public async Task<(bool Succeeded, string? Error)> CreateInspectionAsync(
         InspectionCreateViewModel model, string userId, IReadOnlyCollection<string> roles, CancellationToken cancellationToken = default)
     {
-        var task = await dbContext.Tasks.SingleOrDefaultAsync(item => item.Id == model.TaskId, cancellationToken);
+        var task = await dbContext.Tasks.Include(item => item.Assignments)
+            .SingleOrDefaultAsync(item => item.Id == model.TaskId, cancellationToken);
         if (task is null || !task.RequiresInspection || task.Status == TaskStatusModel.Cancelled)
             return (false, "Công việc không hợp lệ hoặc không yêu cầu nghiệm thu.");
         var access = await TaskAccess.LoadAsync(dbContext, userId, roles, cancellationToken);
@@ -73,12 +74,20 @@ public sealed class QualityService(ApplicationDbContext dbContext) : IQualitySer
         var pending = await dbContext.InspectionRequests.AnyAsync(
             item => item.TaskId == model.TaskId && item.Result == InspectionResult.Pending, cancellationToken);
         if (pending) return (false, "Công việc đã có yêu cầu nghiệm thu đang chờ xử lý.");
+        var lifecycle = new TaskLifecycle(dbContext);
+        var error = await lifecycle.ValidateChangeAsync(task, TaskStatusModel.PendingInspection, 100,
+            task.Assignments.Count, null, null, inspectionRequested: true, cancellationToken: cancellationToken);
+        if (error is not null) return (false, error);
         dbContext.InspectionRequests.Add(new InspectionRequest
         {
             ProjectId = task.ProjectId, TaskId = task.Id, RequestedById = userId
         });
-        new TaskLifecycle(dbContext).Apply(task, TaskStatusModel.PendingInspection, task.PercentComplete, userId);
-        await dbContext.SaveChangesAsync(cancellationToken);
+        lifecycle.Apply(task, TaskStatusModel.PendingInspection, 100, userId);
+        try { await dbContext.SaveChangesAsync(cancellationToken); }
+        catch (DbUpdateConcurrencyException)
+        {
+            return (false, "Công việc vừa được người khác cập nhật. Vui lòng tải lại dữ liệu mới nhất trước khi lưu.");
+        }
         return (true, null);
     }
 
@@ -111,6 +120,20 @@ public sealed class QualityService(ApplicationDbContext dbContext) : IQualitySer
         if (latestId == inspection.Id && model.Result == InspectionResult.Failed && inspection.Task.PercentComplete == 100 &&
             (!model.NewPercentComplete.HasValue || model.NewPercentComplete.Value is < 0 or >= 100))
             return (false, "Nhập phần trăm hoàn thành mới từ 0 đến dưới 100 khi nghiệm thu không đạt.");
+        if (latestId == inspection.Id)
+        {
+            var targetStatus = model.Result == InspectionResult.Passed ? TaskStatusModel.Completed : TaskStatusModel.NeedsRework;
+            var targetPercent = model.Result == InspectionResult.Passed ? 100 :
+                inspection.Task.PercentComplete == 100 ? model.NewPercentComplete!.Value : inspection.Task.PercentComplete;
+            var legacyCorrection = inspection.Task.Status == TaskStatusModel.Completed;
+            var error = await new TaskLifecycle(dbContext).ValidateChangeAsync(
+                inspection.Task, targetStatus, targetPercent, 0, model.DelayReason, null,
+                inspectionResult: model.Result, legacyInspectionCorrection: legacyCorrection, cancellationToken: cancellationToken);
+            if (error is not null) return (false, error);
+            if (legacyCorrection && model.Result == InspectionResult.Failed)
+                new TaskAuditService(dbContext).Add(inspection.Task, userId, "Reopened",
+                    reason: "Điều chỉnh sau nghiệm thu không đạt; xem nội dung khắc phục trong yêu cầu nghiệm thu.");
+        }
         inspection.Result = model.Result;
         inspection.ResultNotes = model.Notes?.Trim();
         inspection.CorrectiveAction = model.CorrectiveAction?.Trim();
@@ -127,9 +150,18 @@ public sealed class QualityService(ApplicationDbContext dbContext) : IQualitySer
                 model.Result == InspectionResult.Passed ? TaskStatusModel.Completed : TaskStatusModel.NeedsRework,
                 model.Result == InspectionResult.Passed ? 100 :
                     inspection.Task.PercentComplete == 100 ? model.NewPercentComplete!.Value : inspection.Task.PercentComplete,
-                userId);
+                userId, model.DelayReason,
+                note: model.Result == InspectionResult.Failed ? "Nghiệm thu không đạt; xem nội dung khắc phục." : null);
         }
-        await dbContext.SaveChangesAsync(cancellationToken);
+        else
+        {
+            inspection.Task.ConcurrencyStamp = Guid.NewGuid();
+        }
+        try { await dbContext.SaveChangesAsync(cancellationToken); }
+        catch (DbUpdateConcurrencyException)
+        {
+            return (false, "Công việc vừa được người khác cập nhật. Vui lòng tải lại dữ liệu mới nhất trước khi lưu.");
+        }
         return (true, null);
     }
 

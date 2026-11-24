@@ -42,6 +42,11 @@ public class Task
 
     public bool RequiresInspection { get; set; }
 
+    [MaxLength(500)]
+    public string? CancelReason { get; set; }
+
+    public Guid ConcurrencyStamp { get; set; } = Guid.NewGuid();
+
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;

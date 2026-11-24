@@ -75,8 +75,16 @@ public static class DbInitializer
 
     public static async Task ApplyMigrationsAsync(
         ApplicationDbContext dbContext,
+        IConfiguration configuration,
         CancellationToken cancellationToken = default)
     {
+        var pending = await dbContext.Database.GetPendingMigrationsAsync(cancellationToken);
+        if (pending.Any(migration => migration.EndsWith("_AddTask06TrackingExtensions", StringComparison.Ordinal)) &&
+            !string.Equals(configuration["CPMS_ALLOW_TASK06_MIGRATION"], "true", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                "Migration TASK-06 chưa được cho phép. Sao lưu và kiểm tra dữ liệu trước khi đặt CPMS_ALLOW_TASK06_MIGRATION=true.");
+        }
         await dbContext.Database.MigrateAsync(cancellationToken);
     }
 

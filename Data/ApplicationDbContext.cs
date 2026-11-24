@@ -48,6 +48,10 @@ public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options
 
     public DbSet<TaskProgressHistory> TaskProgressHistories => Set<TaskProgressHistory>();
 
+    public DbSet<TaskAuditLog> TaskAuditLogs => Set<TaskAuditLog>();
+
+    public DbSet<TaskComment> TaskComments => Set<TaskComment>();
+
     public DbSet<Department> Departments => Set<Department>();
 
     public DbSet<Employee> Employees => Set<Employee>();
@@ -356,6 +360,13 @@ public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options
             .Property(task => task.PercentComplete)
             .HasPrecision(5, 2);
 
+        builder.Entity<TaskEntity>().Property(task => task.ConcurrencyStamp).IsConcurrencyToken();
+        builder.Entity<TaskEntity>().ToTable(table =>
+        {
+            table.HasCheckConstraint("CK_Tasks_CompletionPercentage", "CAST(\"PercentComplete\" AS NUMERIC) >= 0 AND CAST(\"PercentComplete\" AS NUMERIC) <= 100");
+            table.HasCheckConstraint("CK_Tasks_PlannedDates", "\"PlannedEndDate\" >= \"PlannedStartDate\"");
+        });
+
         builder.Entity<TaskEntity>()
             .HasOne(task => task.Project)
             .WithMany()
@@ -401,6 +412,22 @@ public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options
             .WithMany()
             .HasForeignKey(dependency => dependency.PredecessorTaskId)
             .OnDelete(DeleteBehavior.Restrict);
+
+        builder.Entity<TaskDependency>().HasIndex(dependency => new { dependency.TaskId, dependency.PredecessorTaskId }).IsUnique();
+        builder.Entity<TaskDependency>().Property(dependency => dependency.DependencyType).HasDefaultValue("FS");
+        builder.Entity<TaskDependency>().ToTable(table => table.HasCheckConstraint("CK_TaskDependencies_NotSelf", "\"TaskId\" <> \"PredecessorTaskId\""));
+        builder.Entity<TaskDependency>().HasOne(dependency => dependency.CreatedBy).WithMany()
+            .HasForeignKey(dependency => dependency.CreatedById).OnDelete(DeleteBehavior.Restrict);
+
+        builder.Entity<TaskAuditLog>().HasOne(log => log.Task).WithMany()
+            .HasForeignKey(log => log.TaskId).OnDelete(DeleteBehavior.Cascade);
+        builder.Entity<TaskAuditLog>().HasOne(log => log.PerformedBy).WithMany()
+            .HasForeignKey(log => log.PerformedById).OnDelete(DeleteBehavior.Restrict);
+        builder.Entity<TaskComment>().HasOne(comment => comment.Task).WithMany()
+            .HasForeignKey(comment => comment.TaskId).OnDelete(DeleteBehavior.Cascade);
+        builder.Entity<TaskComment>().HasOne(comment => comment.Author).WithMany()
+            .HasForeignKey(comment => comment.AuthorId).OnDelete(DeleteBehavior.Restrict);
+        builder.Entity<TaskComment>().Property(comment => comment.ProgressSnapshot).HasPrecision(5, 2);
 
         builder.Entity<TaskProgressHistory>()
             .Property(history => history.PreviousPercentComplete)

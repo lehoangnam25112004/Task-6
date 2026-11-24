@@ -18,8 +18,49 @@
     <div class="alert alert-danger">@errorMessage</div>
 }
 
+<form method="get" class="row g-2 mb-3">
+    <div class="col-md-3">
+        <label for="ProjectId" class="form-label">Dự án</label>
+        <select id="ProjectId" name="ProjectId" class="form-select">
+            <option value="">Tất cả</option>
+            @foreach (var project in Model.Projects) { <option value="@project.Id" selected="@(Model.Filter.ProjectId == project.Id)">@project.ProjectCode - @project.Name</option> }
+        </select>
+    </div>
+    <div class="col-md-3">
+        <label for="WorkItemId" class="form-label">Hạng mục WBS</label>
+        <select id="WorkItemId" name="WorkItemId" class="form-select">
+            <option value="">Tất cả</option>
+            @foreach (var item in Model.WorkItems) { <option value="@item.Id" selected="@(Model.Filter.WorkItemId == item.Id)">@item.WbsCode - @item.Name</option> }
+        </select>
+    </div>
+    <div class="col-md-2">
+        <label for="Status" class="form-label">Trạng thái</label>
+        <select id="Status" name="Status" class="form-select">
+            <option value="">Tất cả</option>
+            @foreach (var status in Enum.GetValues<TaskStatusModel>()) { <option value="@status" selected="@(Model.Filter.Status == status)">@status.DisplayName()</option> }
+        </select>
+    </div>
+    <div class="col-md-2">
+        <label for="Priority" class="form-label">Ưu tiên</label>
+        <select id="Priority" name="Priority" class="form-select">
+            <option value="">Tất cả</option>
+            @foreach (var priority in Enum.GetValues<TaskPriority>()) { <option value="@priority" selected="@(Model.Filter.Priority == priority)">@priority.DisplayName()</option> }
+        </select>
+    </div>
+    <div class="col-md-2">
+        <label for="Keyword" class="form-label">Từ khóa</label>
+        <input id="Keyword" name="Keyword" value="@Model.Filter.Keyword" class="form-control" />
+    </div>
+    <div class="col-12">
+        <label class="me-3"><input type="checkbox" name="OnlyOverdue" value="true" checked="@Model.Filter.OnlyOverdue" /> Chỉ quá hạn</label>
+        <label class="me-3"><input type="checkbox" name="OnlyBlocked" value="true" checked="@Model.Filter.OnlyBlocked" /> Bị chặn tiền nhiệm</label>
+        <button class="btn btn-primary" type="submit">Lọc</button>
+    </div>
+</form>
+
 <div class="card mb-4">
     <div class="card-body">
+        <p id="chartMessage" role="status" class="text-muted"></p>
         <canvas id="progressChart" height="100"></canvas>
     </div>
 </div>
@@ -31,6 +72,7 @@
                 <tr>
                     <th>Công việc</th>
                     <th>Dự án</th>
+                    <th>WBS</th>
                     <th>Kế hoạch</th>
                     <th>Thực tế</th>
                     <th>Trạng thái</th>
@@ -40,9 +82,10 @@
             <tbody>
             @foreach (var task in Model.Tasks)
             {
-                var overdue = task.PlannedEndDate.Date < DateTime.UtcNow.Date &&
+                var overdue = task.PlannedEndDate.Date < DateTime.Today &&
                               task.PercentComplete < 100 &&
-                              task.Status != TaskStatusModel.Completed;
+                              task.Status is not (TaskStatusModel.Completed or TaskStatusModel.Cancelled);
+                var blocking = task.Dependencies.Where(item => item.PredecessorTask.Status != TaskStatusModel.Completed).ToList();
                 <tr class="@(overdue ? "table-warning" : string.Empty)">
                     <td>
                         @task.Title
@@ -50,16 +93,22 @@
                         {
                             <span class="badge text-bg-warning">Chậm</span>
                         }
+                        @if (blocking.Count > 0) { <span class="badge text-bg-warning" title="@string.Join(", ", blocking.Select(item => item.PredecessorTask.Title))">Bị chặn</span> }
+                        @if (Model.BlockerCommentTaskIds.Contains(task.Id)) { <span class="badge text-bg-danger">Vướng mắc</span> }
+                        <a asp-action="Details" asp-route-id="@task.Id">Lịch sử &amp; trao đổi</a>
                     </td>
                     <td>@task.Project.ProjectCode</td>
+                    <td>@task.WorkItem?.WbsCode - @task.WorkItem?.Name</td>
                     <td>@task.PlannedEndDate.ToString("dd/MM/yyyy")</td>
                     <td>@task.PercentComplete.ToString("0.##")%</td>
                     <td>@task.Status.DisplayName()</td>
                     <td>
-                        @if (Model.UpdatableTaskIds.Contains(task.Id))
+                        @if (Model.UpdatableTaskIds.Contains(task.Id) && blocking.Count == 0 &&
+                             task.Status is not (TaskStatusModel.Completed or TaskStatusModel.Cancelled))
                         {
                         <form asp-action="Update" method="post" class="row g-1">
                             <input type="hidden" name="TaskId" value="@task.Id" />
+                            <input type="hidden" name="ConcurrencyStamp" value="@task.ConcurrencyStamp" />
                             <div class="col-4">
                                 <input name="PercentComplete" type="number" min="0" max="100" step="0.01"
                                        value="@task.PercentComplete" class="form-control form-control-sm" />
@@ -68,7 +117,10 @@
                                 <select name="Status" class="form-select form-select-sm">
                                     @foreach (var status in Enum.GetValues<TaskStatusModel>())
                                     {
-                                        <option value="@status" selected="@(task.Status == status)">@status.DisplayName()</option>
+                                        if (status != TaskStatusModel.Cancelled || Model.CancelableTaskIds.Contains(task.Id))
+                                        {
+                                            <option value="@status" selected="@(task.Status == status)">@status.DisplayName()</option>
+                                        }
                                     }
                                 </select>
                             </div>
@@ -76,10 +128,62 @@
                                 <input name="DelayReason" placeholder="Nguyên nhân nếu chậm"
                                        class="form-control form-control-sm" />
                             </div>
+                            <div class="col-12">
+                                <input name="Reason" placeholder="Lý do hủy hoặc mở lại"
+                                       class="form-control form-control-sm" />
+                            </div>
                             <div class="col-12 mt-1">
                                 <button type="submit" class="btn btn-sm btn-primary">Lưu tiến độ</button>
                             </div>
                         </form>
+                        }
+                        @if (task.Status == TaskStatusModel.Completed && Model.CancelableTaskIds.Contains(task.Id) && blocking.Count == 0)
+                        {
+                            <form asp-action="Update" method="post">
+                                <input type="hidden" name="TaskId" value="@task.Id" />
+                                <input type="hidden" name="ConcurrencyStamp" value="@task.ConcurrencyStamp" />
+                                <input type="hidden" name="Reopen" value="true" />
+                                <select name="Status" class="form-select form-select-sm">
+                                    <option value="InProgress">Đang thực hiện</option>
+                                    <option value="NeedsRework">Cần làm lại</option>
+                                </select>
+                                <input name="PercentComplete" type="number" min="0" max="99.99" step="0.01" class="form-control form-control-sm" required />
+                                <input name="Reason" class="form-control form-control-sm" placeholder="Lý do mở lại" required />
+                                <input name="DelayReason" class="form-control form-control-sm" placeholder="Lý do chậm nếu quá hạn" />
+                                <button class="btn btn-sm btn-warning">Mở lại</button>
+                            </form>
+                        }
+                        @if (task.Status == TaskStatusModel.Cancelled && Model.CancelableTaskIds.Contains(task.Id))
+                        {
+                            <form asp-action="RestoreCancelled" method="post">
+                                <input type="hidden" name="TaskId" value="@task.Id" />
+                                <input type="hidden" name="ConcurrencyStamp" value="@task.ConcurrencyStamp" />
+                                <label class="form-label">Tiến độ hiện tại (%)</label>
+                                <input type="text" value="@task.PercentComplete.ToString("0.##")" class="form-control form-control-sm" readonly />
+                                <label class="form-label">Trạng thái khôi phục</label>
+                                <select name="Status" class="form-select form-select-sm" required>
+                                    <option value="Pending" selected="@(task.PercentComplete == 0)">Chờ xử lý</option>
+                                    <option value="InProgress" selected="@(task.PercentComplete > 0)">Đang thực hiện</option>
+                                </select>
+                                <input name="Reason" class="form-control form-control-sm" placeholder="Lý do mở lại" maxlength="500" required />
+                                @if (task.PlannedEndDate.Date < DateTime.Today)
+                                {
+                                    <input name="DelayReason" class="form-control form-control-sm" placeholder="Lý do chậm (ít nhất 10 ký tự)" minlength="10" maxlength="500" required />
+                                }
+                                <button class="btn btn-sm btn-warning">Khôi phục</button>
+                            </form>
+                        }
+                        @if (blocking.Count > 0 && Model.CancelableTaskIds.Contains(task.Id) &&
+                             task.Status is not (TaskStatusModel.Completed or TaskStatusModel.Cancelled or TaskStatusModel.PendingInspection))
+                        {
+                            <form asp-action="Update" method="post">
+                                <input type="hidden" name="TaskId" value="@task.Id" />
+                                <input type="hidden" name="ConcurrencyStamp" value="@task.ConcurrencyStamp" />
+                                <input type="hidden" name="Status" value="Cancelled" />
+                                <input type="hidden" name="PercentComplete" value="@task.PercentComplete" />
+                                <input name="Reason" class="form-control form-control-sm" placeholder="Lý do hủy" required />
+                                <button class="btn btn-sm btn-outline-danger">Hủy công việc</button>
+                            </form>
                         }
                     </td>
                 </tr>
@@ -89,12 +193,34 @@
     </div>
 </div>
 
+<nav aria-label="Phân trang tiến độ" class="mt-3">
+    <span>Trang @Model.Filter.Page / @Model.TotalPages — @Model.TotalCount công việc</span>
+    @for (var page = 1; page <= Model.TotalPages; page++)
+    {
+        <a class="btn btn-sm @(page == Model.Filter.Page ? "btn-primary" : "btn-outline-primary")"
+           asp-action="Index" asp-route-Page="@(page)" asp-route-ProjectId="@Model.Filter.ProjectId"
+           asp-route-WorkItemId="@Model.Filter.WorkItemId" asp-route-Status="@Model.Filter.Status"
+           asp-route-Priority="@Model.Filter.Priority" asp-route-OnlyOverdue="@Model.Filter.OnlyOverdue"
+           asp-route-OnlyBlocked="@Model.Filter.OnlyBlocked" asp-route-Keyword="@Model.Filter.Keyword">@(page)</a>
+    }
+</nav>
+
 @section Scripts {
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+    <script src="~/lib/chartjs/chart.umd.min.js"></script>
     <script>
-        fetch('@Url.Action("ChartData", "Progress")')
-            .then(response => response.json())
-            .then(data => {
+        (async () => {
+            const message = document.getElementById('chartMessage');
+            try {
+                if (typeof Chart === 'undefined') throw new Error('Chart.js unavailable');
+                const url = new URL('@Url.Action("ChartData", "Progress")', window.location.origin);
+                url.search = window.location.search;
+                const response = await fetch(url);
+                if (!response.ok) throw new Error('Chart data unavailable');
+                const data = await response.json();
+                if (data.length === 0) {
+                    message.textContent = 'Chưa có dữ liệu biểu đồ cho bộ lọc hiện tại.';
+                    return;
+                }
                 new Chart(document.getElementById('progressChart'), {
                     type: 'bar',
                     data: {
@@ -106,6 +232,10 @@
                     },
                     options: { responsive: true, scales: { y: { beginAtZero: true, max: 100 } } }
                 });
-            });
+            } catch (error) {
+                message.textContent = 'Không thể tải biểu đồ tiến độ. Vui lòng thử lại.';
+                console.error(error);
+            }
+        })();
     </script>
 }

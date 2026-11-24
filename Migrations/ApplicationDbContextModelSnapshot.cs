@@ -2058,6 +2058,14 @@ namespace ConstructionProjectManagement.Migrations
                     b.Property<DateTime?>("ActualStartDate")
                         .HasColumnType("TEXT");
 
+                    b.Property<string>("CancelReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("TEXT");
+
+                    b.Property<Guid>("ConcurrencyStamp")
+                        .IsConcurrencyToken()
+                        .HasColumnType("TEXT");
+
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("TEXT");
 
@@ -2109,7 +2117,12 @@ namespace ConstructionProjectManagement.Migrations
 
                     b.HasIndex("WorkItemId");
 
-                    b.ToTable("Tasks");
+                    b.ToTable("Tasks", t =>
+                        {
+                            t.HasCheckConstraint("CK_Tasks_CompletionPercentage", "CAST(\"PercentComplete\" AS NUMERIC) >= 0 AND CAST(\"PercentComplete\" AS NUMERIC) <= 100");
+
+                            t.HasCheckConstraint("CK_Tasks_PlannedDates", "\"PlannedEndDate\" >= \"PlannedStartDate\"");
+                        });
                 });
 
             modelBuilder.Entity("ConstructionProjectManagement.Models.TaskAssignment", b =>
@@ -2138,11 +2151,110 @@ namespace ConstructionProjectManagement.Migrations
                     b.ToTable("TaskAssignments");
                 });
 
+            modelBuilder.Entity("ConstructionProjectManagement.Models.TaskAuditLog", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Action")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("FieldName")
+                        .HasMaxLength(100)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("NewValue")
+                        .HasMaxLength(1000)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("OldValue")
+                        .HasMaxLength(1000)
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("PerformedAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("PerformedById")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Reason")
+                        .HasMaxLength(500)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("TaskId")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("PerformedById");
+
+                    b.HasIndex("TaskId");
+
+                    b.ToTable("TaskAuditLogs");
+                });
+
+            modelBuilder.Entity("ConstructionProjectManagement.Models.TaskComment", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("AuthorId")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Content")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<bool>("IsBlocker")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<decimal>("ProgressSnapshot")
+                        .HasPrecision(5, 2)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("TaskId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AuthorId");
+
+                    b.HasIndex("TaskId");
+
+                    b.ToTable("TaskComments");
+                });
+
             modelBuilder.Entity("ConstructionProjectManagement.Models.TaskDependency", b =>
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("CreatedById")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("DependencyType")
+                        .ValueGeneratedOnAdd()
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("TEXT")
+                        .HasDefaultValue("FS");
 
                     b.Property<int>("PredecessorTaskId")
                         .HasColumnType("INTEGER");
@@ -2152,11 +2264,17 @@ namespace ConstructionProjectManagement.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("CreatedById");
+
                     b.HasIndex("PredecessorTaskId");
 
-                    b.HasIndex("TaskId");
+                    b.HasIndex("TaskId", "PredecessorTaskId")
+                        .IsUnique();
 
-                    b.ToTable("TaskDependencies");
+                    b.ToTable("TaskDependencies", t =>
+                        {
+                            t.HasCheckConstraint("CK_TaskDependencies_NotSelf", "\"TaskId\" <> \"PredecessorTaskId\"");
+                        });
                 });
 
             modelBuilder.Entity("ConstructionProjectManagement.Models.TaskProgressHistory", b =>
@@ -2166,6 +2284,7 @@ namespace ConstructionProjectManagement.Migrations
                         .HasColumnType("INTEGER");
 
                     b.Property<string>("DelayReason")
+                        .HasMaxLength(500)
                         .HasColumnType("TEXT");
 
                     b.Property<decimal>("NewPercentComplete")
@@ -2174,6 +2293,10 @@ namespace ConstructionProjectManagement.Migrations
 
                     b.Property<int>("NewStatus")
                         .HasColumnType("INTEGER");
+
+                    b.Property<string>("Note")
+                        .HasMaxLength(500)
+                        .HasColumnType("TEXT");
 
                     b.Property<decimal>("PreviousPercentComplete")
                         .HasPrecision(5, 2)
@@ -3241,8 +3364,51 @@ namespace ConstructionProjectManagement.Migrations
                     b.Navigation("User");
                 });
 
+            modelBuilder.Entity("ConstructionProjectManagement.Models.TaskAuditLog", b =>
+                {
+                    b.HasOne("ConstructionProjectManagement.Models.ApplicationUser", "PerformedBy")
+                        .WithMany()
+                        .HasForeignKey("PerformedById")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("ConstructionProjectManagement.Models.Task", "Task")
+                        .WithMany()
+                        .HasForeignKey("TaskId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("PerformedBy");
+
+                    b.Navigation("Task");
+                });
+
+            modelBuilder.Entity("ConstructionProjectManagement.Models.TaskComment", b =>
+                {
+                    b.HasOne("ConstructionProjectManagement.Models.ApplicationUser", "Author")
+                        .WithMany()
+                        .HasForeignKey("AuthorId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("ConstructionProjectManagement.Models.Task", "Task")
+                        .WithMany()
+                        .HasForeignKey("TaskId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Author");
+
+                    b.Navigation("Task");
+                });
+
             modelBuilder.Entity("ConstructionProjectManagement.Models.TaskDependency", b =>
                 {
+                    b.HasOne("ConstructionProjectManagement.Models.ApplicationUser", "CreatedBy")
+                        .WithMany()
+                        .HasForeignKey("CreatedById")
+                        .OnDelete(DeleteBehavior.Restrict);
+
                     b.HasOne("ConstructionProjectManagement.Models.Task", "PredecessorTask")
                         .WithMany()
                         .HasForeignKey("PredecessorTaskId")
@@ -3254,6 +3420,8 @@ namespace ConstructionProjectManagement.Migrations
                         .HasForeignKey("TaskId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
+
+                    b.Navigation("CreatedBy");
 
                     b.Navigation("PredecessorTask");
 

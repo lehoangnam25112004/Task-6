@@ -6,12 +6,37 @@
 }
 
 <div class="d-flex justify-content-between align-items-center mb-3">
-    <h1 class="h3">@task.Title</h1>
-    @if (Model.CanEdit)
-    {
-        <a class="btn btn-outline-primary" asp-action="Edit" asp-route-id="@task.Id">Cập nhật</a>
-    }
+    <h1 class="h3">
+        @task.Title
+        @if (Model.Comments.Any(comment => comment.IsBlocker)) { <span class="badge text-bg-danger">Vướng mắc</span> }
+    </h1>
+    <div>
+        @if (Model.CanAdjustSchedule)
+        {
+            <a class="btn btn-outline-secondary" asp-controller="Tasks" asp-action="AdjustSchedule" asp-route-id="@task.Id">Điều chỉnh kế hoạch</a>
+        }
+        @if (Model.CanEdit)
+        {
+            <a class="btn btn-outline-primary" asp-controller="Tasks" asp-action="Edit" asp-route-id="@task.Id">Cập nhật</a>
+        }
+    </div>
 </div>
+
+@if (TempData["SuccessMessage"] is string success) { <div class="alert alert-success">@success</div> }
+@if (TempData["ErrorMessage"] is string error) { <div class="alert alert-danger">@error</div> }
+
+@if (Model.CanViewTracking && Model.Dependencies.Any(item => item.PredecessorTask.Status != ConstructionProjectManagement.Models.TaskStatus.Completed))
+{
+    <div class="alert alert-warning" role="alert">
+        <strong>Công việc bị chặn bởi tiền nhiệm chưa hoàn thành:</strong>
+        <ul class="mb-0">
+            @foreach (var dependency in Model.Dependencies.Where(item => item.PredecessorTask.Status != ConstructionProjectManagement.Models.TaskStatus.Completed))
+            {
+                <li>@dependency.PredecessorTask.Title — @dependency.PredecessorTask.Status.DisplayName()</li>
+            }
+        </ul>
+    </div>
+}
 
 <div class="card">
     <div class="card-body">
@@ -28,8 +53,136 @@
             <dd class="col-sm-9">@task.PlannedStartDate.ToString("dd/MM/yyyy") - @task.PlannedEndDate.ToString("dd/MM/yyyy")</dd>
             <dt class="col-sm-3">Hoàn thành</dt>
             <dd class="col-sm-9">@task.PercentComplete.ToString("0.##")%</dd>
+            @if (!string.IsNullOrWhiteSpace(task.CancelReason))
+            {
+                <dt class="col-sm-3">@(task.Status == ConstructionProjectManagement.Models.TaskStatus.Cancelled ? "Lý do hủy" : "Lý do hủy trước đó")</dt>
+                <dd class="col-sm-9">@task.CancelReason</dd>
+            }
             <dt class="col-sm-3">Người phụ trách</dt>
             <dd class="col-sm-9">@string.Join(", ", task.Assignments.Select(assignment => assignment.User.FullName))</dd>
         </dl>
+        @if (Model.CanRestoreCancelled)
+        {
+            <form asp-controller="Progress" asp-action="RestoreCancelled" method="post" class="mt-3">
+                <input type="hidden" name="TaskId" value="@task.Id" />
+                <input type="hidden" name="ConcurrencyStamp" value="@task.ConcurrencyStamp" />
+                <input type="hidden" name="ReturnToDetails" value="true" />
+                <label class="form-label">Trạng thái khôi phục</label>
+                <select name="Status" class="form-select" required>
+                    <option value="Pending" selected="@(task.PercentComplete == 0)">Chờ xử lý</option>
+                    <option value="InProgress" selected="@(task.PercentComplete > 0)">Đang thực hiện</option>
+                </select>
+                <label class="form-label mt-2">Lý do mở lại</label>
+                <input name="Reason" class="form-control" maxlength="500" required />
+                @if (task.PlannedEndDate.Date < DateTime.Today)
+                {
+                    <label class="form-label mt-2">Lý do chậm (ít nhất 10 ký tự)</label>
+                    <input name="DelayReason" class="form-control" minlength="10" maxlength="500" required />
+                }
+                <button class="btn btn-warning mt-2">Khôi phục công việc</button>
+            </form>
+        }
     </div>
+
+    @if (Model.CanViewTracking)
+    {
+        <section class="card mt-3">
+            <div class="card-body">
+                <h2 class="h5">Công việc tiền nhiệm</h2>
+                @foreach (var dependency in Model.Dependencies)
+                {
+                    <div>
+                        @dependency.PredecessorTask.Title — @dependency.PredecessorTask.Status.DisplayName() (@dependency.PredecessorTask.PercentComplete%)
+                        @if (Model.CanManageDependencies)
+                        {
+                            <form asp-controller="Progress" asp-action="RemoveDependency" method="post" class="d-inline">
+                                <input type="hidden" name="taskId" value="@task.Id" />
+                                <input type="hidden" name="dependencyId" value="@dependency.Id" />
+                                <button class="btn btn-sm btn-outline-danger">Xóa phụ thuộc</button>
+                            </form>
+                        }
+                    </div>
+                }
+                @if (Model.CanManageDependencies)
+                {
+                    <form asp-controller="Progress" asp-action="AddDependency" method="post" class="mt-2">
+                        <input type="hidden" name="taskId" value="@task.Id" />
+                        <label for="predecessorId">Thêm tiền nhiệm</label>
+                        <select id="predecessorId" name="predecessorId" class="form-select" required>
+                            <option value="">Chọn công việc</option>
+                            @foreach (var predecessor in Model.Predecessors) { <option value="@predecessor.Id">@predecessor.Title</option> }
+                        </select>
+                        <button class="btn btn-sm btn-primary mt-2">Thêm phụ thuộc</button>
+                    </form>
+                }
+            </div>
+        </section>
+        <section class="card mt-3">
+            <div class="card-body">
+                <h2 class="h5">Lịch sử tiến độ</h2>
+                @foreach (var history in Model.History)
+                {
+                    <p>@history.UpdatedAt.ToString("dd/MM/yyyy HH:mm") — @history.UpdatedBy.FullName:
+                        @history.PreviousStatus.DisplayName() (@history.PreviousPercentComplete%) →
+                        @history.NewStatus.DisplayName() (@history.NewPercentComplete%)
+                        @history.DelayReason @history.Note</p>
+                }
+            </div>
+        </section>
+        @if (Model.CanViewAudit)
+        {
+            <section class="card mt-3">
+                <div class="card-body">
+                    <h2 class="h5">Nhật ký thay đổi</h2>
+                    @foreach (var entry in Model.Audit)
+                    {
+                        <p>@entry.PerformedAt.ToString("dd/MM/yyyy HH:mm") — @entry.PerformedBy.FullName:
+                            @entry.Action @entry.FieldName @entry.OldValue → @entry.NewValue @entry.Reason</p>
+                    }
+                </div>
+            </section>
+        }
+        <section class="card mt-3">
+            <div class="card-body">
+                <h2 class="h5">Trao đổi</h2>
+                @foreach (var comment in Model.Comments)
+                {
+                    <div class="mb-3">
+                        <strong>@comment.Author.FullName</strong> — @comment.CreatedAt.ToString("dd/MM/yyyy HH:mm")
+                        @if (Model.CommentAuthorRoles.TryGetValue(comment.AuthorId, out var authorRoles)) { <span>(@authorRoles)</span> }
+                        @if (comment.IsBlocker) { <span class="badge text-bg-danger">Vướng mắc</span> }
+                        <p>@comment.Content</p>
+                        @if (comment.UpdatedAt.HasValue) { <span class="text-muted">Đã chỉnh sửa</span> }
+                        @if (Model.ResolvableBlockerCommentIds.Contains(comment.Id))
+                        {
+                            <form asp-controller="Progress" asp-action="ResolveBlocker" method="post">
+                                <input type="hidden" name="taskId" value="@task.Id" />
+                                <input type="hidden" name="commentId" value="@comment.Id" />
+                                <button class="btn btn-sm btn-outline-success mt-1">Đã giải quyết</button>
+                            </form>
+                        }
+                        @if (Model.CanComment && (Model.IsAdmin || comment.AuthorId == Model.UserId && DateTime.UtcNow <= comment.CreatedAt.AddMinutes(15)))
+                        {
+                            <form asp-controller="Progress" asp-action="EditComment" method="post">
+                                <input type="hidden" name="taskId" value="@task.Id" />
+                                <input type="hidden" name="commentId" value="@comment.Id" />
+                                <textarea name="content" class="form-control" maxlength="2000" required>@comment.Content</textarea>
+                                <button class="btn btn-sm btn-outline-primary mt-1">Sửa bình luận</button>
+                            </form>
+                        }
+                    </div>
+                }
+                @if (Model.CanComment)
+                {
+                    <form asp-controller="Progress" asp-action="AddComment" method="post">
+                        <input type="hidden" name="taskId" value="@task.Id" />
+                        <label for="commentContent">Bình luận mới</label>
+                        <textarea id="commentContent" name="content" class="form-control" maxlength="2000" required></textarea>
+                        <label><input type="checkbox" name="isBlocker" value="true" /> Đánh dấu vướng mắc</label>
+                        <button class="btn btn-sm btn-primary">Gửi bình luận</button>
+                    </form>
+                }
+            </div>
+        </section>
+    }
 </div>

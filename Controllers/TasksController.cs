@@ -47,9 +47,15 @@ public class TasksController(
         var projectIds = access.ProjectIds;
         var projects = await dbContext.Projects.AsNoTracking().Where(project => projectIds.Contains(project.Id))
             .OrderBy(project => project.Name).ToListAsync(cancellationToken);
+        var filteredTasks = query.ToList();
+        var trackingTaskIds = filteredTasks.Where(access.CanViewTrackingTask).Select(task => task.Id).ToArray();
+        var blockerTaskIds = await dbContext.TaskComments.AsNoTracking()
+            .Where(comment => trackingTaskIds.Contains(comment.TaskId) && comment.IsBlocker)
+            .Select(comment => comment.TaskId).Distinct().ToListAsync(cancellationToken);
         return View(new TaskListViewModel
         {
-            Tasks = query.ToList(), Projects = projects, ProjectId = projectId, Status = status,
+            Tasks = filteredTasks, BlockerCommentTaskIds = blockerTaskIds.ToHashSet(),
+            Projects = projects, ProjectId = projectId, Status = status,
             Priority = priority, Keyword = keyword,
             CanCreate = access.CanManageTasks && access.WritableProjectIds.Length > 0
         });
@@ -67,7 +73,53 @@ public class TasksController(
         var access = await TaskAccess.LoadAsync(dbContext, user.Id, roles, cancellationToken);
         if (access is null) return Forbid();
         var task = await taskService.GetByIdAsync(id, user.Id, roles, cancellationToken);
-        return task is null ? NotFound() : View(new TaskDetailsViewModel { Task = task, CanEdit = access.CanEditTask(task.ProjectId) });
+        return task is null ? NotFound() : View(await new TaskTrackingService(dbContext).GetDetailsAsync(task, access, cancellationToken));
+    }
+
+    [HttpGet]
+    public async Task<IActionResult> AdjustSchedule(int id, CancellationToken cancellationToken)
+    {
+        var user = await userManager.GetUserAsync(User);
+        if (user is null) return Challenge();
+        var roles = (await userManager.GetRolesAsync(user)).ToArray();
+        var access = await TaskAccess.LoadAsync(dbContext, user.Id, roles, cancellationToken);
+        if (access is null) return Forbid();
+        var task = await taskService.GetByIdAsync(id, user.Id, roles, cancellationToken);
+        if (task is null) return NotFound();
+        if (!access.CanAdjustSchedule(task)) return Forbid();
+        ViewData["TaskTitle"] = task.Title;
+        return View(new TaskScheduleViewModel
+        {
+            Id = task.Id, ConcurrencyStamp = task.ConcurrencyStamp,
+            PlannedStartDate = task.PlannedStartDate, PlannedEndDate = task.PlannedEndDate
+        });
+    }
+
+    [HttpPost]
+    [ValidateAntiForgeryToken]
+    public async Task<IActionResult> AdjustSchedule(int id, TaskScheduleViewModel model, CancellationToken cancellationToken)
+    {
+        if (id != model.Id) return BadRequest();
+        var user = await userManager.GetUserAsync(User);
+        if (user is null) return Challenge();
+        var roles = (await userManager.GetRolesAsync(user)).ToArray();
+        var access = await TaskAccess.LoadAsync(dbContext, user.Id, roles, cancellationToken);
+        if (access is null) return Forbid();
+        var task = await taskService.GetByIdAsync(id, user.Id, roles, cancellationToken);
+        if (task is null) return NotFound();
+        if (!access.CanAdjustSchedule(task)) return Forbid();
+        ViewData["TaskTitle"] = task.Title;
+        if (!ModelState.IsValid || !model.PlannedStartDate.HasValue || !model.PlannedEndDate.HasValue || !model.ConcurrencyStamp.HasValue)
+            return View(model);
+        var result = await taskService.AdjustScheduleAsync(id, model.PlannedStartDate.Value, model.PlannedEndDate.Value,
+            model.ConcurrencyStamp.Value, model.Reason, user.Id, roles, cancellationToken);
+        if (!result.Succeeded)
+        {
+            ModelState.AddModelError(string.Empty, result.Error!);
+            return View(model);
+        }
+        TempData["SuccessMessage"] = "Đã điều chỉnh kế hoạch.";
+        return RedirectToAction(nameof(Details), new { id });
     }
 
     public async Task<IActionResult> Create(int? projectId, CancellationToken cancellationToken)
@@ -101,7 +153,8 @@ public class TasksController(
             user.Id,
             access.Roles.Contains(RoleNames.Admin),
             access.Roles,
-            cancellationToken);
+            cancellationToken,
+            model.DelayReason);
         if (!result.Succeeded)
         {
             ModelState.AddModelError(string.Empty, result.Error!);
@@ -168,7 +221,9 @@ public class TasksController(
             user.Id,
             roles.Contains(RoleNames.Admin),
             roles,
-            cancellationToken);
+            cancellationToken,
+            model.DelayReason,
+            model.ScheduleReason);
         if (!result.Succeeded)
         {
             ModelState.AddModelError(string.Empty, result.Error!);
@@ -266,7 +321,9 @@ public class TasksController(
             ActualEndDate = model.ActualEndDate,
             Status = model.Status,
             PercentComplete = model.PercentComplete,
-            RequiresInspection = model.RequiresInspection
+            RequiresInspection = model.RequiresInspection,
+            ConcurrencyStamp = model.ConcurrencyStamp,
+            CancelReason = model.CancelReason
         };
     }
 
@@ -288,6 +345,8 @@ public class TasksController(
             Status = task.Status,
             PercentComplete = task.PercentComplete,
             RequiresInspection = task.RequiresInspection,
+            ConcurrencyStamp = task.ConcurrencyStamp,
+            CancelReason = task.CancelReason,
             AssigneeIds = task.Assignments.Select(assignment => assignment.UserId).ToList()
         };
     }

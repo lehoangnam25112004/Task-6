@@ -37,6 +37,7 @@ public sealed class InspectionResultViewModel
     public string? Notes { get; set; }
     public string? CorrectiveAction { get; set; }
     public decimal? NewPercentComplete { get; set; }
+    [MaxLength(500)] public string? DelayReason { get; set; }
 }
 
 public sealed class QualityIndexViewModel

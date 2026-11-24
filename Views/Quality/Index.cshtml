@@ -45,6 +45,7 @@
                 <select name="Result" class="form-select form-select-sm"><option value="Passed">Đạt</option><option value="Failed">Không đạt</option></select>
                 <input name="Notes" class="form-control form-control-sm" placeholder="Kết quả" />
                 <input name="CorrectiveAction" class="form-control form-control-sm" placeholder="Khắc phục nếu không đạt" />
+                <input name="DelayReason" class="form-control form-control-sm" placeholder="Lý do chậm nếu quá hạn (10–500 ký tự)" />
                 @if (Model.LatestInspectionIds.Contains(item.Id) && item.Task.PercentComplete == 100)
                 {
                     <input name="NewPercentComplete" type="number" min="0" step="any" class="form-control form-control-sm" placeholder="% mới dưới 100 nếu không đạt" />

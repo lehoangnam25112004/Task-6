@@ -123,7 +123,7 @@ public sealed class Task05UiTests(WbsUiFixture fixture) : IClassFixture<WbsUiFix
             var outsideDetails = await context.APIRequest.GetAsync($"{fixture.BaseUrl}/Tasks/Details/{outsideId}", new() { MaxRedirects = 0 });
             Assert.Equal(global ? 200 : 404, outsideDetails.Status);
 
-            await page.GotoAsync($"{fixture.BaseUrl}/Progress");
+            await page.GotoAsync($"{fixture.BaseUrl}/Progress?Keyword={Uri.EscapeDataString(marker)}");
             var activeRow = page.Locator("tbody tr").Filter(new() { HasText = marker })
                 .Filter(new() { HasNotText = "-UI-" }).Filter(new() { HasNotText = $"{marker}-OUTSIDE" });
             Assert.Equal(progress ? 1 : 0, await activeRow.Locator("form").CountAsync());
@@ -136,8 +136,9 @@ public sealed class Task05UiTests(WbsUiFixture fixture) : IClassFixture<WbsUiFix
             readOnlyForm.Append("PercentComplete", "25");
             readOnlyForm.Append("Status", "InProgress");
             var blocked = await context.APIRequest.PostAsync($"{fixture.BaseUrl}/Progress/Update", new() { Form = readOnlyForm, MaxRedirects = 0 });
-            Assert.Equal(302, blocked.Status);
-            Assert.Contains("/Account/AccessDenied", blocked.Headers["location"], StringComparison.OrdinalIgnoreCase);
+            Assert.Equal(role == "Worker" ? 404 : 302, blocked.Status);
+            if (role != "Worker")
+                Assert.Contains("/Account/AccessDenied", blocked.Headers["location"], StringComparison.OrdinalIgnoreCase);
             if (progress)
             {
                 await activeRow.Locator("input[name=PercentComplete]").FillAsync("25");
@@ -192,8 +193,9 @@ public sealed class Task05UiTests(WbsUiFixture fixture) : IClassFixture<WbsUiFix
         form.Append("PercentComplete", "25");
         form.Append("Status", "InProgress");
         var response = await context.APIRequest.PostAsync($"{fixture.BaseUrl}/Progress/Update", new() { Form = form, MaxRedirects = 0 });
-        Assert.Equal(302, response.Status);
-        Assert.Contains("/Account/AccessDenied", response.Headers["location"], StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(role == "Worker" ? 404 : 302, response.Status);
+        if (role != "Worker")
+            Assert.Contains("/Account/AccessDenied", response.Headers["location"], StringComparison.OrdinalIgnoreCase);
         await using var db = fixture.OpenDb();
         Assert.Equal(0m, (await db.Tasks.SingleAsync(task => task.Id == active)).PercentComplete);
     }

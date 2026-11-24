@@ -9,6 +9,20 @@ public sealed class TaskEditViewModel
 {
     public int? Id { get; set; }
 
+    public Guid ConcurrencyStamp { get; set; }
+
+    [MaxLength(500)]
+    [Display(Name = "Lý do hủy")]
+    public string? CancelReason { get; set; }
+
+    [MaxLength(500)]
+    [Display(Name = "Lý do chậm")]
+    public string? DelayReason { get; set; }
+
+    [MaxLength(500)]
+    [Display(Name = "Lý do điều chỉnh kế hoạch")]
+    public string? ScheduleReason { get; set; }
+
     [Required(ErrorMessage = "Vui lòng chọn dự án.")]
     public int ProjectId { get; set; }
 
@@ -63,6 +77,7 @@ public sealed class TaskEditViewModel
 public sealed class TaskListViewModel
 {
     public required IReadOnlyCollection<TaskEntity> Tasks { get; init; }
+    public IReadOnlySet<int> BlockerCommentTaskIds { get; init; } = new HashSet<int>();
     public bool CanCreate { get; init; }
     public IReadOnlyCollection<Project> Projects { get; init; } = [];
     public int? ProjectId { get; init; }
@@ -75,4 +90,38 @@ public sealed class TaskDetailsViewModel
 {
     public required TaskEntity Task { get; init; }
     public bool CanEdit { get; init; }
+    public bool CanAdjustSchedule { get; init; }
+    public bool CanRestoreCancelled { get; init; }
+    public bool CanViewTracking { get; init; }
+    public bool CanViewAudit { get; init; }
+    public bool CanComment { get; init; }
+    public bool CanManageDependencies { get; init; }
+    public bool IsAdmin { get; init; }
+    public string UserId { get; init; } = "";
+    public IReadOnlyCollection<TaskProgressHistory> History { get; init; } = [];
+    public IReadOnlyCollection<TaskAuditLog> Audit { get; init; } = [];
+    public IReadOnlyCollection<TaskComment> Comments { get; init; } = [];
+    public IReadOnlySet<int> ResolvableBlockerCommentIds { get; init; } = new HashSet<int>();
+    public IReadOnlyDictionary<string, string> CommentAuthorRoles { get; init; } = new Dictionary<string, string>();
+    public IReadOnlyCollection<TaskDependency> Dependencies { get; init; } = [];
+    public IReadOnlyCollection<TaskEntity> Predecessors { get; init; } = [];
+}
+
+public sealed class TaskScheduleViewModel
+{
+    public int Id { get; set; }
+    [Required]
+    public Guid? ConcurrencyStamp { get; set; }
+    [Required(ErrorMessage = "Vui lòng nhập ngày bắt đầu.")]
+    [DataType(DataType.Date)]
+    [Display(Name = "Ngày bắt đầu dự kiến")]
+    public DateTime? PlannedStartDate { get; set; }
+    [Required(ErrorMessage = "Vui lòng nhập ngày kết thúc.")]
+    [DataType(DataType.Date)]
+    [Display(Name = "Ngày kết thúc dự kiến")]
+    public DateTime? PlannedEndDate { get; set; }
+    [Required(ErrorMessage = "Vui lòng nhập lý do điều chỉnh.")]
+    [MaxLength(500)]
+    [Display(Name = "Lý do điều chỉnh kế hoạch")]
+    public string? Reason { get; set; }
 }

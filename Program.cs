@@ -68,7 +68,7 @@ app.MapControllerRoute(
 await using (var scope = app.Services.CreateAsyncScope())
 {
     var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-    await DbInitializer.ApplyMigrationsAsync(dbContext);
+    await DbInitializer.ApplyMigrationsAsync(dbContext, app.Configuration);
     var roleManager = scope.ServiceProvider.GetRequiredService<RoleManager<IdentityRole>>();
     await DbInitializer.SeedRolesAsync(roleManager);
     var userManager = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();

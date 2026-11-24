@@ -22,7 +22,8 @@ public interface ITaskService
         string userId,
         bool isAdmin,
         IReadOnlyCollection<string> roles,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default,
+        string? delayReason = null);
 
     System.Threading.Tasks.Task<(bool Succeeded, string? Error)> UpdateAsync(
         TaskEntity task,
@@ -30,5 +31,12 @@ public interface ITaskService
         string userId,
         bool isAdmin,
         IReadOnlyCollection<string> roles,
+        CancellationToken cancellationToken = default,
+        string? delayReason = null,
+        string? scheduleReason = null);
+
+    System.Threading.Tasks.Task<(bool Succeeded, string? Error)> AdjustScheduleAsync(
+        int taskId, DateTime plannedStartDate, DateTime plannedEndDate, Guid concurrencyStamp,
+        string? reason, string userId, IReadOnlyCollection<string> roles,
         CancellationToken cancellationToken = default);
 }

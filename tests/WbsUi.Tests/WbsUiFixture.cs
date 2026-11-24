@@ -64,6 +64,7 @@ public sealed class WbsUiFixture : IAsyncLifetime
             start.Environment["CPMS_SEED_TASK02_TEST_DATA"] = "false";
             start.Environment["CPMS_REMOVE_TASK02_TEST_DATA"] = "false";
             start.Environment["CPMS_SEED_TASK03_TEST_DATA"] = "false";
+            start.Environment["CPMS_ALLOW_TASK06_MIGRATION"] = "true";
             start.Environment.Remove("CPMS_ADMIN_EMAIL");
             start.Environment.Remove("CPMS_ADMIN_PASSWORD");
             _server = new Process { StartInfo = start };
@@ -112,7 +113,7 @@ public sealed class WbsUiFixture : IAsyncLifetime
             await _server.WaitForExitAsync();
             _server.Dispose();
         }
-        foreach (var path in new[] { _dbPath, _dbPath + "-wal", _dbPath + "-shm" })
+        foreach (var path in new[] { _dbPath, _dbPath + "-wal", _dbPath + "-shm", _dbPath + "-journal" })
         {
             for (var attempt = 0; ; attempt++)
             {

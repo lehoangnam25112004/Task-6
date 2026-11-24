@@ -59,7 +59,10 @@
             @foreach (var task in Model.Tasks)
             {
                 <tr>
-                    <td>@task.Title</td>
+                    <td>
+                        @task.Title
+                        @if (Model.BlockerCommentTaskIds.Contains(task.Id)) { <span class="badge text-bg-danger">Vướng mắc</span> }
+                    </td>
                     <td>@task.Project.ProjectCode</td>
                     <td>@task.WorkItem?.WbsCode</td>
                     <td>@task.Priority.DisplayName()</td>

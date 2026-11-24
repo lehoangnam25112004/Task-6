@@ -645,6 +645,7 @@ public sealed class WbsServiceTests : IAsyncLifetime
                 Id = linkedTask.Id,
                 ProjectId = project.Id,
                 WorkItemId = archivedItem.Id,
+                ConcurrencyStamp = linkedTask.ConcurrencyStamp,
                 Title = "Task updated without changing its WBS link",
                 PlannedStartDate = new DateTime(2026, 1, 1),
                 PlannedEndDate = new DateTime(2026, 1, 2)
@@ -652,7 +653,8 @@ public sealed class WbsServiceTests : IAsyncLifetime
             [],
             user.Id,
             isAdmin: false,
-            ["Project Manager"]);
+            ["Project Manager"],
+            delayReason: "Lý do chậm tiến độ kiểm thử");
 
         Assert.True(result.Succeeded, result.Error);
         Assert.Equal(

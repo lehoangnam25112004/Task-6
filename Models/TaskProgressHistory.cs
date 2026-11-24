@@ -1,3 +1,4 @@
+using System.ComponentModel.DataAnnotations;
 using TaskEntity = ConstructionProjectManagement.Models.Task;
 
 namespace ConstructionProjectManagement.Models;
@@ -18,7 +19,11 @@ public class TaskProgressHistory
 
     public TaskStatus NewStatus { get; set; }
 
+    [MaxLength(500)]
     public string? DelayReason { get; set; }
+
+    [MaxLength(500)]
+    public string? Note { get; set; }
 
     public required string UpdatedById { get; set; }
 

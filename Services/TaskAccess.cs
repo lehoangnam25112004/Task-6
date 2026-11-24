@@ -72,6 +72,34 @@ public sealed class TaskAccess
          (_roles.Any(role => role is "Worker" or "Supervising Engineer") &&
           task.Assignments.Any(assignment => assignment.UserId == UserId)));
 
+    public bool CanViewTrackingTask(TaskEntity task) =>
+        CanView(task.ProjectId) &&
+        (!_roles.Contains("Worker", StringComparer.Ordinal) ||
+         _roles.Any(role => role != "Worker" && RoleNames.All.Contains(role, StringComparer.Ordinal)) ||
+         task.Assignments.Any(assignment => assignment.UserId == UserId));
+
+    public bool CanManageDependencies(int projectId) =>
+        _projects.TryGetValue(projectId, out var project) && IsWritable(project) &&
+        _roles.Any(ProgressRoles.Contains);
+
+    public bool CanCancelOrReopen(int projectId) => CanEditTask(projectId);
+
+    public bool CanAdjustSchedule(TaskEntity task) =>
+        _projects.TryGetValue(task.ProjectId, out var project) && IsWritable(project) &&
+        _roles.Any(ProgressRoles.Contains) && task.PercentComplete > 0 &&
+        task.Status is not (Models.TaskStatus.Completed or Models.TaskStatus.Cancelled);
+
+    public bool CanComment(TaskEntity task) =>
+        CanViewTrackingTask(task) &&
+        _projects.TryGetValue(task.ProjectId, out var project) && IsWritable(project) &&
+        _roles.Any(role => role != "Client Representative" && RoleNames.All.Contains(role, StringComparer.Ordinal));
+
+    public bool CanResolveBlocker(TaskEntity task, string authorId) =>
+        CanComment(task) && (CanManageTasks || authorId == UserId);
+
+    public bool CanViewAudit => _roles.Any(role =>
+        role is not ("Client Representative" or "Materials Staff") && RoleNames.All.Contains(role, StringComparer.Ordinal));
+
     public static bool IsWritable(Project project) =>
         !project.IsArchived && project.Status is not (ProjectStatus.Completed or ProjectStatus.Cancelled);
 }
